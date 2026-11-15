@@ -104,12 +104,28 @@ let of_pascal surface =
       | Some roundtrip when roundtrip = surface -> Some kernel
       | _ -> None
 
+(** [of_pascal_task_twin surface] is the kernel spelling [base@task] of a root-twin effect spelling
+    [Base@task] (an effect a task leaves to the root grant, see {!Task_twin}), when [Base] is an
+    ordinary PascalCase name, and [None] otherwise. *)
+let of_pascal_task_twin surface =
+  match Task_twin.spelled_base surface with
+  | Some base -> Option.map (fun kernel -> kernel ^ Task_twin.suffix) (of_pascal base)
+  | None -> None
+
+(** [to_pascal_task_twin kernel] inverts {!of_pascal_task_twin}. *)
+let to_pascal_task_twin kernel =
+  match Task_twin.spelled_base kernel with
+  | Some base -> Option.map (fun surface -> surface ^ Task_twin.suffix) (to_pascal base)
+  | None -> None
+
 let escape kind kernel = Printf.sprintf "`%s:%s`" (kind_tag kind) kernel
 
 (** [render kind kernel] chooses ordinary surface spelling when it round-trips exactly, otherwise
     the kind-tagged escape required by printer totality. *)
 let render kind kernel =
   match kind with
+  | Effect when Option.is_some (to_pascal_task_twin kernel) ->
+      Option.get (to_pascal_task_twin kernel)
   | Type | Con | Effect -> ( match to_pascal kernel with Some s -> s | None -> escape kind kernel)
   | Term | Op | Tvar | Rvar ->
       if valid_lower_name kernel && not (is_reserved kernel) then kernel else escape kind kernel

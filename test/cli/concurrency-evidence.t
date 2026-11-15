@@ -6,8 +6,8 @@ complete, unique, replayable schedules.
   $ export JACQUARD_PRELUDE=$PWD/../../prelude
   $ JACQUARD=jac sh ../../demos/concurrency/run.sh
   == child authority stays visible ==
-  spawn-net : () ->{Async, Net} Task Text
-  scoped-net : () ->{Net} TaskResult (TaskResult Text)
+  spawn-net : () ->{Async, Net@task} Task Text
+  scoped-net : () ->{Net@task} TaskResult (TaskResult Text)
   == one task program, four scheduler handlers ==
   program-hash=0c6c2bb245f0fd38e47abfd04313156954f74e7a1ca2eb4d0ca553c93ce1098a
   trace-format=1

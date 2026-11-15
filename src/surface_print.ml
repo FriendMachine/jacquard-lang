@@ -357,7 +357,15 @@ let name_for_hash lookup meta kind hash =
   | None -> (
       match Option.bind lookup (fun find -> find kind hash) with
       | Some name -> render_name kind name
-      | None -> hash_name kind hash)
+      | None -> (
+          (* a root twin prints as its base effect's name with [@task] *)
+          match (kind, Task_twin.base_of hash) with
+          | Surface_name.Effect, Some base -> (
+              match Option.bind lookup (fun find -> find kind base) with
+              | Some name when Option.is_some (Surface_name.to_pascal name) ->
+                  render_name kind (name ^ Task_twin.suffix)
+              | Some _ | None -> hash_name kind hash)
+          | _ -> hash_name kind hash))
 
 let name_for_value_hash lookup meta kind hash =
   match kind with

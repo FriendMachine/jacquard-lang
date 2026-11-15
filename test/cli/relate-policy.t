@@ -92,7 +92,7 @@ operation the program does not have, and one pinned to another interface.
   > EOF
   $ jacquard relate receive-order.jac --vary schedule=2 --seed 4 --policy pinned.policy; echo "exit $?"
   error[E1005]: The observation policy is invalid or refused.
-    Cause: The policy is pinned to interface 0000000000000000000000000000000000000000000000000000000000000000, but the observed program's interface is 41876cd2314ce448993f019bac3012626f506e242b9dffe8bdcb4207597ed05a.
+    Cause: The policy is pinned to interface 0000000000000000000000000000000000000000000000000000000000000000, but the observed program's interface is 75644d406a95fa0087aab145f854c30add2468f7ae90f2c8db14cc5011a2c172.
     Next step: Write the policy in canonical observation-policy-v1 form and name only operations and an interface identity of the observed program.
   exit 1
 

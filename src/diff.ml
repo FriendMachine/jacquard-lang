@@ -92,14 +92,26 @@ let authority_row (form : Form.t) =
     in
     collect [] form.Form.args
 
+(* A row label through the blessed registry; a root twin ([E@task], {!Task_twin}) renders as its
+   base effect with the [@task] suffix on its name. *)
+let render_label ~effect_name_of label =
+  match
+    (Task_twin.base_of label, Option.bind (Task_twin.base_of label) Effect_registry.find_canonical)
+  with
+  | Some _, Some metadata ->
+      Effect_registry.render_blessed
+        ~name:(metadata.Effect_registry.display_name ^ Task_twin.suffix)
+        metadata
+  | Some base, None ->
+      Effect_registry.render_resolved ~name_hint:(effect_name_of base ^ Task_twin.suffix) base
+  | None, _ -> Effect_registry.render_resolved ~name_hint:(effect_name_of label) label
+
 (** [render_authority_row ~effect_name_of row] renders resolved identities through the blessed
     registry, using [effect_name_of] only as the unblessed package/name hint. *)
 let render_authority_row ~effect_name_of (effects, tail) =
   let effects =
     effects
-    |> List.map (fun identity ->
-        Alloc_meter.rendered_piece
-          (Effect_registry.render_resolved ~name_hint:(effect_name_of identity) identity))
+    |> List.map (fun label -> Alloc_meter.rendered_piece (render_label ~effect_name_of label))
     |> List.sort String.compare
   in
   let items = match tail with Some tail -> effects @ [ "| " ^ tail ] | None -> effects in
@@ -109,12 +121,15 @@ let render_authority_row ~effect_name_of (effects, tail) =
     charges nothing: the traversal also serves the metered [code.diff] builtin, whose rendered text
     is [a]/[b] alone. *)
 let authority_effects ~effect_name_of (effects, tail) =
-  let describe identity =
-    let full = Effect_registry.render_resolved ~name_hint:(effect_name_of identity) identity in
+  let describe label =
+    (* a root twin is described as its base effect with [@task] *)
+    let identity = Task_twin.base label in
+    let twin = if Task_twin.is_twin label then Task_twin.suffix else "" in
+    let full = render_label ~effect_name_of label in
     let short =
       match Effect_registry.find_canonical identity with
-      | Some metadata -> metadata.Effect_registry.display_name
-      | None -> effect_name_of identity ^ "#" ^ String.sub (Hash.to_hex identity) 0 12
+      | Some metadata -> metadata.Effect_registry.display_name ^ twin
+      | None -> effect_name_of identity ^ twin ^ "#" ^ String.sub (Hash.to_hex identity) 0 12
     in
     { short; full }
   in

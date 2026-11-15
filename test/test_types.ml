@@ -889,18 +889,33 @@ let test_task_twins () =
   Alcotest.(check (list hash))
     "authority consumers see the base effect once" [ console ]
     (effect_identities (closed_row [ console; twin ]));
-  (* display: signatures show the base, diagnostics mark the twin *)
+  (* a twin of a twinnable effect is known before any task produced it, so one read back from a
+     store resolves in a fresh process *)
+  let net = registered "net" in
+  Alcotest.(check (option hash))
+    "a stored twin is recognized" (Some net)
+    (task_twin_base (Hash.of_string ("jacquard/task-root-effect/v1\000" ^ Hash.to_raw net)));
+  Alcotest.(check (pair bool bool))
+    "console is twinnable, async is not" (true, false)
+    (Task_twin.twinnable console, Task_twin.twinnable async);
+  Alcotest.(check (option string))
+    "the kernel spelling of a twin" (Some "console")
+    (Task_twin.spelled_base "console@task");
+  Alcotest.(check (option string))
+    "the surface spelling of a twin" (Some "console@task")
+    (Surface_name.of_pascal_task_twin "Console@task");
+  (* display: a twin shows as name@task, after its base *)
   let name_of h = if Hash.equal h console then "console" else "other" in
   let arrow row = TArrow ([], row, t_int) in
   Alcotest.(check string)
-    "a signature shows the base" "() ->{console} other"
+    "a twin shows as name@task" "() ->{console@task} other"
     (show ~name_of (arrow (closed_row [ twin ])));
   Alcotest.(check string)
-    "and both labels once" "() ->{console} other"
+    "after its base" "() ->{console, console@task} other"
     (show ~name_of (arrow (closed_row [ console; twin ])));
   Alcotest.(check string)
-    "a diagnostic marks the twin" "() ->{console@task} other"
-    (show ~name_of ~mark_task_effects:true (arrow (closed_row [ twin ])));
+    "a row without twins is unchanged" "() ->{console} other"
+    (show ~name_of (arrow (closed_row [ console ])));
   (* the outward label: every admitted effect but Async becomes its twin *)
   let task_with_outward () =
     let outward = { empty_row with tail = new_rvar 1 } in

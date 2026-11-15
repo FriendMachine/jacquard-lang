@@ -54,15 +54,26 @@ Notes for the next release's upgrade section, collected as changes land:
   performs under an in-language handler written around the task (such as
   `console.scripted`, `dist.enumerate`, `clock.fixed` or a user Console
   handler) is no longer discharged by that handler, which never sees the
-  task's operations: the program now needs the root grant (`--allow`, E0814 in
-  manifests, host preflight and Warp world grants). Previously such a program
-  checked as pure and its child's operation went to the root grant anyway, or
-  failed without it. Grant the effect or handle it inside the task. Printed
-  signatures are unchanged; diagnostics show such an effect as `name@task`.
-  A closed or rigid row written in the program that names the effect does not
-  admit `name@task`, so an annotation such as `() ->{Console} TaskResult ()`
-  on a function whose scope body prints is now a mismatch: leave the row open
-  or handle the effect inside the task. For the same reason a Warp `Prop` whose
-  body runs a task that samples is now refused (its row admits Dist, not
-  `dist@task`), while a `WCase` row admits the twins of the world effects it
-  lists. A handler written directly around such a task gets warning W0802.
+  task's operations. Previously such a program checked as pure and its
+  child's operation went to the root grant anyway, or failed without it. Now
+  a root-grantable effect needs its root grant (`--allow`, E0814 in manifests,
+  host preflight and Warp world grants): grant it or handle it inside the
+  task. Channel needs no grant; the scheduler manages it. Outside the task
+  such an effect carries a separate label, its root twin, which printed
+  signatures, interfaces and diagnostics show as `Console@task` (signatures)
+  or `console@task` (diagnostics). So the printed signature of a function
+  whose task leaves an effect to the root changes, for example from
+  `() ->{Console} TaskResult ()` to `() ->{Console@task} TaskResult ()`;
+  signatures of other functions are unchanged. An effect row written in the
+  program may name the twin (`Console@task`; only Channel and the
+  root-grantable effects have one, E0316 otherwise), so printed signatures can
+  be written back as annotations. An annotation that names only `Console` on
+  such a function, open or closed, is now a mismatch: write `Console@task`,
+  remove the annotation, or handle the effect inside the task. A row the
+  prelude fixes cannot name the twin, so a Warp `Case`, `Prop` or `WCase` whose
+  body runs a task that leaves an effect to the root, and a `judge.model`
+  model callback (closed `{Infer}`) that does, are now refused: handle the
+  effect inside the task. A host-protocol target may carry the twin in its
+  closed annotation; its pinned interface lists the base effect. A handler
+  written directly around such a task gets warning W0802, and a behavior
+  review refuses a case whose task leaves an effect to the root (E1012).

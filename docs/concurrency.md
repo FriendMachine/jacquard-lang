@@ -112,18 +112,37 @@ does not reach the call's row as itself. Every effect the task leaves
 unhandled, except Async, reaches it as a separate label, its root twin
 `E@task`, which no handler discharges. The twin stays in the row up to the
 root, where it is charged as E: `--allow`, the manifest (E0814), host
-preflight and Warp's world grants read it as E. Printed signatures and
-interfaces show E (so they are unchanged); diagnostics show `name@task`. For
-example `console.scripted(fn () -> async.scope(fn () -> print("x")), Nil)`
-needs the console grant. A row written in the program stays exact: a closed or
-rigid row that names Console does not admit `console@task`, and the mismatch
-says so; a Warp `Case` or `Prop` row is closed the same way, while a `WCase`
-row admits the twins of the world effects it lists. A handler written directly
+preflight and Warp's world grants read it as E. For example
+`console.scripted(fn () -> async.scope(fn () -> print("x")), Nil)` needs the
+console grant. Printed signatures, interfaces and diagnostics show the twin
+(`Console@task` in signatures, `console@task` in diagnostics), and a row
+written in the program may name it the same way, so a printed signature can be
+written back as an annotation:
+
+```text
+t : () ->{Console@task} TaskResult ()
+t() = async.scope(fn () -> print("child\n"))
+```
+
+Only Channel and the root-grantable effects (Clock, Console, Dist, Eval, Fs,
+Infer, Net, Secret) have a twin; `E@task` on any other effect is refused
+(E0316). Naming the twin never discharges anything: a handler of Console
+around a call of `t` still leaves `Console@task` in the row. A row written in
+the program stays exact otherwise: a closed or rigid row that names only
+Console, open or not, does not admit `console@task`, and the mismatch says so.
+Write `Console@task` in the annotation, remove the annotation, or handle the
+effect inside the task. A row the prelude fixes cannot name the twin: a Warp
+`Case`, `Prop` or `WCase` thunk, and the model callback of `judge.model`
+(closed `{Infer}`), refuse a task that leaves an effect to the root, so handle
+the effect inside the task there. A host-protocol target may carry a twin in
+its closed annotation; its pinned interface lists the base effect, whose
+operations then reach the host as root operations. A handler written directly
 around such a task is warned about (W0802); the warning is best-effort and does
 not see through a wrapper whose handler body is a parameter. Known limit: a
 handler that re-performs the effect it handles, such as `fs.read-only`, keeps
-the effect in the row anyway, so the charge cannot show that a child's write
-bypasses it. A user handler that interprets Async itself (the native parity
+the effect in the row anyway, so the grant is the same: the signature shows
+`Fs@task` beside `Fs`, but nothing refuses a child's write, which bypasses the
+read-only handler. A user handler that interprets Async itself (the native parity
 seam) runs children inline, where an outer handler would reach them, but is
 refused like any other.
 
@@ -228,12 +247,13 @@ launder() = async.spawn(fn () -> net.get("https://example.invalid"))
 ```
 
 The fixture is the SC.4 closure proof: every transport route retains `Async`
-and the child's world effects. The two uses of `forward` independently solve
-the shared row to `Net` and `Fs`; nested scopes remove only `Async`. The
-documented aggregate therefore has the pinned signature:
+and the child's world effects, as their root twins. The two uses of `forward`
+independently solve the shared row to `Net@task` and `Fs@task`; nested scopes
+remove only `Async`. The documented aggregate therefore has the pinned
+signature:
 
 ```text
-fetch-all : (List Text) ->{Net} TaskResult (List (TaskResult Text))
+fetch-all : (List Text) ->{Net@task} TaskResult (List (TaskResult Text))
 ```
 
 Negative checker and manifest crams use the same complete frozen four-operation
@@ -855,13 +875,13 @@ open-channel : forall a. (Int) ->{Channel} Result ChannelError (ChannelHandle a)
 send-one : forall a. (ChannelHandle a, a) ->{Channel} Result ChannelError ()
 recv-one : forall a. (ChannelHandle a) ->{Channel} Result ChannelError a
 close-channel : forall a. (ChannelHandle a) ->{Channel} ()
-spawn-send : forall a. (ChannelHandle a, a) ->{Async, Channel} Task (Result ChannelError ())
+spawn-send : forall a. (ChannelHandle a, a) ->{Async, Channel@task} Task (Result ChannelError ())
 ```
 
 The block is signature output rather than source, so it is intentionally a
 `text` fence. Channel does not receive a special dependent-row rule: Async's
 existing child-row law carries the child's Channel effect to the spawning
-caller. An Async scope may discharge only Async and therefore retains Channel.
+caller, as its root twin `Channel@task`. An Async scope may discharge only Async and therefore retains Channel.
 
 SC.14 routes only the exact frozen Channel declaration and member identities
 through the default interpreted scheduler, just as SC.9 routes only the exact

@@ -122,6 +122,10 @@ val render_resolved : ?style:style -> name_hint:string -> Hash.t -> string
     Unknown effects retain [name_hint], include their full identity, and are always uncolored and
     unrated. *)
 
+val render_blessed : ?style:style -> name:string -> metadata -> string
+(** [render_blessed ~name metadata] renders [metadata] as {!render_resolved} does for a registry
+    hit, spelling the effect as [name]. *)
+
 val render_manifest_requirement : ?style:style -> name_hint:string -> Hash.t -> string
 (** Like {!render_resolved}, but uses the lowercase official index name for a blessed effect so CLI
     grant spelling remains evident. *)

@@ -131,34 +131,22 @@ let task_effect_allowed : (Hash.t -> bool) ref = ref (fun _ -> true)
 (* Root-twin labels                                                    *)
 (* ------------------------------------------------------------------ *)
 
-(* twin raw digest -> base effect identity. A mutex guards it because editor recovery may check
-   in several domains at once; entries are deterministic, so a race could only repeat one. *)
-let task_twins : (string, Hash.t) Hashtbl.t = Hashtbl.create 16
-let task_twins_lock = Mutex.create ()
-
 (** [task_twin_base label] is [Some base] when [label] is the root twin of effect [base] (see
     {!task_twin}), and [None] for every other identity. It never fails. *)
-let task_twin_base label =
-  Mutex.protect task_twins_lock (fun () -> Hashtbl.find_opt task_twins (Hash.to_raw label))
+let task_twin_base = Task_twin.base_of
 
 (** [is_task_twin label] holds when [label] is a root twin. *)
-let is_task_twin label = Option.is_some (task_twin_base label)
+let is_task_twin = Task_twin.is_twin
 
-(** [task_twin base] is the root twin [base@task]: the label an effect a task leaves unhandled
-    carries in the rows outside the task. Its identity is the deterministic hash
-    [HASH_V0("jacquard/task-root-effect/v1\000" ^ raw base)], and the function is idempotent (the
-    twin of a twin is itself). No handler, declaration or source spelling names a twin, so no
-    language handler discharges it: it stays in the row and reaches the root grant, which charges
-    its base effect (via {!effect_identities}). It never fails. *)
-let task_twin base =
-  if is_task_twin base then base
-  else
-    let twin = Hash.of_string ("jacquard/task-root-effect/v1\000" ^ Hash.to_raw base) in
-    Mutex.protect task_twins_lock (fun () -> Hashtbl.replace task_twins (Hash.to_raw twin) base);
-    twin
+(** [task_twin base] is the root twin [base@task] ({!Task_twin}): the label an effect a task leaves
+    unhandled carries in the rows outside the task. It is idempotent (the twin of a twin is itself).
+    No handler discharges a twin: it stays in the row and reaches the root grant, which charges its
+    base effect (via {!effect_identities}). Source may name it as [E@task] in a written row. It
+    never fails. *)
+let task_twin = Task_twin.twin
 
 (** [base_effect label] is the base effect of a root twin and [label] itself otherwise. *)
-let base_effect label = Option.value (task_twin_base label) ~default:label
+let base_effect = Task_twin.base
 
 (** [task_outward_label] maps an effect a task leaves unhandled to the label it carries in the rows
     outside the task (the spawn or scope call row). {!Check} installs the policy when it is linked:
@@ -169,7 +157,9 @@ let task_outward_label : (Hash.t -> Hash.t) ref = ref Fun.id
 (** The sentence a row mismatch involving a root twin appends to its detail. *)
 let task_twin_explanation =
   "; `name@task` marks an effect a task (an async.spawn child or an async.scope body) leaves to \
-   the root grant, and a row that names the effect does not include it: leave the row open or \
+   the root grant, which a row naming only the effect does not include: write it in the annotation \
+   (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the \
+   task; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there \
    handle the effect inside the task"
 
 (** [twin_note labels] is {!task_twin_explanation} when [labels] holds a root twin, and empty
@@ -180,7 +170,7 @@ let twin_note labels = if List.exists is_task_twin labels then task_twin_explana
     root-twin explanation when [extra] holds a twin, and the eta-expansion hint otherwise. *)
 let absorb_error extra =
   if List.exists is_task_twin extra then
-    "a closed effect row cannot absorb extra effects" ^ task_twin_explanation
+    "a closed or rigid effect row cannot absorb extra effects" ^ task_twin_explanation
   else
     "a closed effect row cannot absorb extra effects; a stored definition passed as a thunk can be \
      eta-expanded at the use site: (lam () (app (var f)))"
@@ -1174,11 +1164,11 @@ and row_mentions_label id row =
 (** Render a type for signatures and diagnostics. [name_of] maps a type hash to its display name;
     [effect_name_of] can provide a distinct effect namespace projection and defaults to [name_of].
     Quantified/unbound type vars print as [a b c ...], row vars as [e e1 e2 ...], and skolems by
-    their source names. A root twin prints as its base effect, so signatures are unchanged, unless
-    [mark_task_effects] is set (diagnostics): it then prints as [name@task] beside any plain [name].
-*)
+    their source names. A root twin prints as [name@task] ([effect_name_of] of its base with the
+    suffix), right after any plain [name], so a printed signature that holds one can be written back
+    as an annotation; a row without twins renders exactly as its {!effect_identities}. *)
 let show ?(name_of = fun h -> String.sub (Hash.to_hex h) 0 8) ?effect_name_of ?(surface = false)
-    ?(mark_task_effects = false) (t : ty) : string =
+    (t : ty) : string =
   let effect_name_of = Option.value ~default:name_of effect_name_of in
   let tnames : (int, string) Hashtbl.t = Hashtbl.create 8 in
   let rnames : (int, string) Hashtbl.t = Hashtbl.create 8 in
@@ -1205,16 +1195,14 @@ let show ?(name_of = fun h -> String.sub (Hash.to_hex h) 0 8) ?effect_name_of ?(
   in
   let show_row (r : row) =
     let r = repr_row r in
-    (* an instance entry displays as its effect name (A1.8) *)
+    (* an instance entry displays as its effect name (A1.8); a twin sorts by its base, after it *)
     let effs =
-      if mark_task_effects then
-        List.sort_uniq Hash.compare
-          (r.effects @ List.map (fun (entry : instance) -> entry.effect_id) r.instances)
-        |> List.map (fun identity ->
-            match task_twin_base identity with
-            | Some base -> effect_name_of base ^ "@task"
-            | None -> effect_name_of identity)
-      else List.map effect_name_of (effect_identities r)
+      List.map (fun identity -> (base_effect identity, is_task_twin identity)) r.effects
+      @ List.map (fun (entry : instance) -> (entry.effect_id, false)) r.instances
+      |> List.sort_uniq (fun (left, left_twin) (right, right_twin) ->
+          match Hash.compare left right with 0 -> Bool.compare left_twin right_twin | c -> c)
+      |> List.map (fun (identity, twin) ->
+          if twin then effect_name_of identity ^ Task_twin.suffix else effect_name_of identity)
     in
     match r.tail with
     | RClosed -> String.concat ", " effs

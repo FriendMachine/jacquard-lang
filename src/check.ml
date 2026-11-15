@@ -389,14 +389,6 @@ let instance_refusal ?meta code detail =
     ~summary:(diagnostic_summary code) ~cause:detail ~next_step:(diagnostic_next_step code)
     ~contrast:None ()
 
-(** [root_grantable identity] holds when a root grant can handle effect [identity]: a registry
-    effect whose grant name is root-grantable. Identity decides, never the spelling. *)
-let root_grantable identity =
-  match Effect_registry.find_canonical identity with
-  | Some metadata ->
-      List.mem (Effect_registry.root_grant_name metadata) Effect_registry.root_grantable_names
-  | None -> false
-
 (** [task_may_leave_unhandled identity] is the E0837 policy: an effect a task may leave to its
     surroundings, because the scheduler (Async, Channel) or a root grant handles it there. Every
     other effect must be handled inside the task, since a task runs on a fresh continuation and no
@@ -407,7 +399,7 @@ let task_may_leave_unhandled identity =
   let hex = Hash.to_hex identity in
   String.equal hex Concurrency_contract.async_effect_hash
   || String.equal hex Channel_contract.channel_effect_hash
-  || Types.is_task_twin identity || root_grantable identity
+  || Types.is_task_twin identity || Task_twin.root_grantable identity
 
 (** [task_outward_label identity] is the label an admitted effect a task leaves unhandled carries
     outside the task: the scheduler's Async stays itself (the spawn or scope call is an Async
@@ -440,7 +432,7 @@ let with_trusted_store_refs ctx f =
       f ())
 
 let name_of ctx h =
-  (* a root twin is named by its base effect; diagnostics add [@task] when rendering rows *)
+  (* a root twin is named by its base effect; rendering a row adds [@task] *)
   let h = Types.base_effect h in
   match locate ctx h with
   | Ok { Store.decl; role; _ } -> (
@@ -457,7 +449,7 @@ let name_of ctx h =
   | Error _ -> String.sub (Hash.to_hex h) 0 8
 
 (** [show_ty ctx t] renders [t] for a diagnostic; a root twin shows as [name@task]. *)
-let show_ty ctx t = Types.show ~name_of:(name_of ctx) ~mark_task_effects:true t
+let show_ty ctx t = Types.show ~name_of:(name_of ctx) t
 
 (** [refusal_name_of ctx identity] names an effect in a refusal raised during unification (E0833,
     E0837). A user effect whose name collides with a registry effect's name is qualified
@@ -756,7 +748,8 @@ let payload_parameters ctx hash =
 let fresh_payloads ctx effects =
   List.filter_map
     (fun hash ->
-      match payload_parameters ctx hash with
+      (* a root twin carries its base effect's payloads *)
+      match payload_parameters ctx (Types.base_effect hash) with
       | [] -> None
       | vars -> Some (hash, List.map (fun _ -> new_tvar ctx.level) vars))
     (List.sort_uniq Hash.compare effects)
@@ -1071,19 +1064,6 @@ let check_decl_payload_storage ?meta ?(effectself = None) ~parameters ty =
 
 (* Constructor scheme: forall vars. (fields) ->{} T vars  (nullary: T vars). Field types are
    declaration types: tyvars come from the decl header, self-references are the decl. *)
-
-(** [admit_task_twins field] adds to a thunk field's row the root twin of each root-grantable effect
-    it lists, so a task inside the thunk may leave those effects to the root. Any other field is
-    returned unchanged. *)
-let admit_task_twins field =
-  match field with
-  | TArrow (params, row, result) ->
-      let row = repr_row row in
-      let twins = List.map Types.task_twin (List.filter root_grantable row.effects) in
-      TArrow
-        (params, { row with effects = List.sort_uniq Hash.compare (row.effects @ twins) }, result)
-  | field -> field
-
 let rec con_scheme ctx ?meta (h : Hash.t) : scheme =
   (* a capability exists only as its scope's token, registered or not (design §10 A2.1) *)
   if Instance_contract.is_private_carrier h then
@@ -1122,13 +1102,6 @@ let rec con_scheme ctx ?meta (h : Hash.t) : scheme =
           (conv_decl_ty ctx cenv ~self:(tname, result) fl.Kernel.fty)
       in
       let fields = List.map conv_field c.Kernel.fields in
-      (* a world case's thunk may run tasks that leave its root-grantable effects to the root:
-         its closed row admits their root twins as well (a hermetic Case or Prop row does not) *)
-      let fields =
-        match Prelude_identity.pinned ctx.store "wcase" Resolve.KCon with
-        | Some wcase when Hash.equal wcase h -> List.map admit_task_twins fields
-        | Some _ | None -> fields
-      in
       let ty = match fields with [] -> result | fields -> TArrow (fields, empty_row, result) in
       { ty; gen_level = ctx.level }
   | Ok _ -> err ?meta ~code:"E0805" "hash %s is not a constructor" (Hash.to_hex h)

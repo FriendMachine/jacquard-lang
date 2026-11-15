@@ -976,15 +976,44 @@ let rec resolve_ty st ~locals ~tyself ~effectself (t : Kernel.ty) : Kernel.ty =
     Only a member equal to the enclosing effect name remains [Named]; with [effectself = None], no
     unresolved row name is accepted. Diagnostics accumulate in [st] as for {!resolve_ty}. *)
 and resolve_row st ~locals ~effectself (r : Kernel.row) : Kernel.row =
+  let resolve_effect effect_ref =
+    resolve_gref st ~meta:r.Kernel.wmeta ~locals ~expected_kind:KEffect ~expected_desc:"an effect"
+      ~what:"effect" effect_ref
+  in
   {
     r with
     Kernel.effects =
       List.map
         (function
           | Kernel.Named n when effectself = Some n -> Kernel.Named n
-          | effect_ref ->
-              resolve_gref st ~meta:r.Kernel.wmeta ~locals ~expected_kind:KEffect
-                ~expected_desc:"an effect" ~what:"effect" effect_ref)
+          | Kernel.Named n when Option.is_some (Task_twin.spelled_base n) -> (
+              (* [E@task] names the root twin of E: the label E carries outside a task that leaves
+                 it to the root grant. Only Channel and the root-grantable effects have one. *)
+              let base = Option.get (Task_twin.spelled_base n) in
+              let refuse () =
+                report st
+                  (Diag.error ?span:(Meta.span r.Kernel.wmeta) ~domain:Resolution ~code:"E0316"
+                     ~summary:"This effect row names a root twin that does not exist."
+                     ~cause:
+                       (Printf.sprintf
+                          "`%s` names a root twin, but the effect `%s` it resolves to has none: \
+                           only Channel and the built-in root-grantable effects (clock, console, \
+                           dist, eval, fs, infer, net, secret) have one, the label such an effect \
+                           carries outside a task that leaves it to the root grant."
+                          n base)
+                     ~next_step:
+                       "Remove `@task`, or name Channel or a root-grantable effect before it."
+                     ~contrast:None ());
+                Kernel.Named n
+              in
+              if effectself = Some base then refuse ()
+              else
+                match resolve_effect (Kernel.Named base) with
+                | Kernel.Hashed hash when Task_twin.twinnable hash ->
+                    Kernel.Hashed (Task_twin.twin hash)
+                | Kernel.Hashed _ -> refuse ()
+                | Kernel.Named _ -> Kernel.Named n)
+          | effect_ref -> resolve_effect effect_ref)
         r.Kernel.effects;
   }
 

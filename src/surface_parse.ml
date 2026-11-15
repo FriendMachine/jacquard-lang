@@ -2145,6 +2145,18 @@ and parse_arrow state ~allow_newlines params left_meta =
               stopped_before_top := true;
               finished := true
             end
+        | Surface_lex.Ident name when Option.is_some (Surface_name.of_pascal_task_twin name) ->
+            (* [Console@task]: the root twin of an effect a task leaves to the root grant *)
+            if Option.is_some !tail then
+              report state token "the effect-row tail must be the final row item";
+            let index = List.length !effects in
+            effects :=
+              Surface_ast.Named (Option.get (Surface_name.of_pascal_task_twin name)) :: !effects;
+            own_indexed "row-effect" index (advance state);
+            if not (parse_row_separator state ~effect_index:index row_owners) then begin
+              stopped_before_top := true;
+              finished := true
+            end
         | Surface_lex.Escaped (Surface_name.Effect, name) ->
             if Option.is_some !tail then
               report state token "the effect-row tail must be the final row item";

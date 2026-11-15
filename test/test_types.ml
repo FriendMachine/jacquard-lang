@@ -771,9 +771,10 @@ let test_task_outward_rows () =
   let tail, outward = task 1 in
   let next = new_rvar 1 in
   bind_rvar (cell tail) { (closed_row [ console ]) with tail = next };
-  Alcotest.(check bool)
-    "a granted effect reaches the outward row" true
-    (List.exists (Hash.equal console) (effects outward));
+  Alcotest.(check (pair bool bool))
+    "a granted effect reaches the outward row as its root twin" (true, false)
+    ( List.exists (Hash.equal (task_twin console)) (effects outward),
+      List.exists (Hash.equal console) (effects outward) );
   Alcotest.(check (pair bool int))
     "the new tail inherits the flag and the outward list" (true, 1)
     (let _, task_row, task_out = unbound next in
@@ -801,8 +802,8 @@ let test_task_outward_rows () =
   unify_rows { empty_row with tail = left } (closed_row [ console ]);
   Alcotest.(check (pair bool bool))
     "both outward rows receive the effect" (true, true)
-    ( List.exists (Hash.equal console) (effects left_out),
-      List.exists (Hash.equal console) (effects right_out) );
+    ( List.exists (Hash.equal (task_twin console)) (effects left_out),
+      List.exists (Hash.equal (task_twin console)) (effects right_out) );
   (* an outward row that resolves back into the task's own chain terminates *)
   let own =
     ref
@@ -816,7 +817,7 @@ let test_task_outward_rows () =
   bind_rvar own (open_row 1 [ console ]);
   Alcotest.(check bool)
     "a cycle of outward rows terminates" true
-    (List.exists (Hash.equal console) (effects looped));
+    (List.exists (Hash.equal (task_twin console)) (effects looped));
   (* lowering a task tail's level lowers its outward rows and keeps flag and list *)
   let tail, outward = task 5 in
   let holder = new_tvar 2 in
@@ -859,6 +860,93 @@ let test_task_outward_rows () =
     "cloning feeds the cloned outward row" true
     (match clone_schemes [ mono (scope_like ()) ] with [ s ] -> linked s.ty | _ -> false)
 
+let test_task_twins () =
+  (* root twins: an effect a task leaves to the root carries the label E@task outside the task *)
+  ignore (Check.checker_codes : (string * string) list);
+  let registered name =
+    List.find_map
+      (fun (metadata : Effect_registry.metadata) ->
+        match metadata.interface with
+        | Effect_registry.Released { hash; _ } when String.equal metadata.index_name name ->
+            Some hash
+        | _ -> None)
+      Effect_registry.catalog
+    |> Option.get
+  in
+  let console = registered "console" in
+  let async = Option.get (Hash.of_hex Concurrency_contract.async_effect_hash) in
+  let twin = task_twin console in
+  let hash = Alcotest.testable Hash.pp Hash.equal in
+  Alcotest.(check hash)
+    "the twin is the deterministic tagged hash" twin
+    (Hash.of_string ("jacquard/task-root-effect/v1\000" ^ Hash.to_raw console));
+  Alcotest.(check bool) "it is a new identity" false (Hash.equal twin console);
+  Alcotest.(check hash) "twinning is idempotent" twin (task_twin twin);
+  Alcotest.(check (option hash)) "the twin maps to its base" (Some console) (task_twin_base twin);
+  Alcotest.(check (option hash)) "a base effect is not a twin" None (task_twin_base console);
+  Alcotest.(check hash) "base_effect of a twin" console (base_effect twin);
+  Alcotest.(check hash) "base_effect of a plain effect" ha (base_effect ha);
+  Alcotest.(check (list hash))
+    "authority consumers see the base effect once" [ console ]
+    (effect_identities (closed_row [ console; twin ]));
+  (* a twin of a twinnable effect is known before any task produced it, so one read back from a
+     store resolves in a fresh process *)
+  let net = registered "net" in
+  Alcotest.(check (option hash))
+    "a stored twin is recognized" (Some net)
+    (task_twin_base (Hash.of_string ("jacquard/task-root-effect/v1\000" ^ Hash.to_raw net)));
+  Alcotest.(check (pair bool bool))
+    "console is twinnable, async is not" (true, false)
+    (Task_twin.twinnable console, Task_twin.twinnable async);
+  Alcotest.(check (option string))
+    "the kernel spelling of a twin" (Some "console")
+    (Task_twin.spelled_base "console@task");
+  Alcotest.(check (option string))
+    "the surface spelling of a twin" (Some "console@task")
+    (Surface_name.of_pascal_task_twin "Console@task");
+  (* display: a twin shows as name@task, after its base *)
+  let name_of h = if Hash.equal h console then "console" else "other" in
+  let arrow row = TArrow ([], row, t_int) in
+  Alcotest.(check string)
+    "a twin shows as name@task" "() ->{console@task} other"
+    (show ~name_of (arrow (closed_row [ twin ])));
+  Alcotest.(check string)
+    "after its base" "() ->{console, console@task} other"
+    (show ~name_of (arrow (closed_row [ console; twin ])));
+  Alcotest.(check string)
+    "a row without twins is unchanged" "() ->{console} other"
+    (show ~name_of (arrow (closed_row [ console ])));
+  (* the outward label: every admitted effect but Async becomes its twin *)
+  let task_with_outward () =
+    let outward = { empty_row with tail = new_rvar 1 } in
+    (new_rvar ~task_row:true ~task_out:[ outward ] 1, outward)
+  in
+  let tail, outward = task_with_outward () in
+  (match tail with
+  | RVar cell -> bind_rvar cell (closed_row [ async; console ])
+  | _ -> assert false);
+  Alcotest.(check (list hash))
+    "Async stays itself, console becomes its twin"
+    (List.sort Hash.compare [ async; twin ])
+    (repr_row outward).effects;
+  (* a nested task may leave a twin to its own surroundings *)
+  let tail, outward = task_with_outward () in
+  (match tail with RVar cell -> bind_rvar cell (closed_row [ twin ]) | _ -> assert false);
+  Alcotest.(check (list hash)) "a twin passes outward unchanged" [ twin ] (repr_row outward).effects;
+  (* no handler discharges a twin: a closed row naming the base does not admit it *)
+  Alcotest.(check bool)
+    "a closed row naming console refuses console@task" false
+    (unifies (fun () -> unify_rows (closed_row [ console ]) (open_row 1 [ twin ])));
+  match unify_rows (closed_row [ console ]) (open_row 1 [ twin ]) with
+  | () -> Alcotest.fail "expected a row mismatch"
+  | exception Unify_error detail ->
+      let needle = "name@task" in
+      let n = String.length needle in
+      let rec go i =
+        i + n <= String.length detail && (String.sub detail i n = needle || go (i + 1))
+      in
+      Alcotest.(check bool) "and the mismatch explains the twin" true (go 0)
+
 let suite =
   [
     Alcotest.test_case "effect payload constraints survive transport and isolation" `Quick
@@ -869,6 +957,7 @@ let suite =
     Alcotest.test_case "fresh-continuation flag" `Quick test_fresh_continuation_flag;
     Alcotest.test_case "task-row flag (E0837)" `Quick test_task_row_flag;
     Alcotest.test_case "task-row outward rows (E0837)" `Quick test_task_outward_rows;
+    Alcotest.test_case "root twins of task effects" `Quick test_task_twins;
     Alcotest.test_case "labels are their own sort" `Quick test_label_sort;
     Alcotest.test_case "instance payloads in occurs and quantification" `Quick
       test_instance_payload_occurs;

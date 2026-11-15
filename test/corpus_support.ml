@@ -427,6 +427,11 @@ let diag_cases : (string * string * string list option) list =
       "(lam () (app (var state.run) (lam () (app (var async.scope) (lam () (app (var put) (lit \
        1))))) (lit 0)))",
       None );
+    ( "task-effect-root-twin",
+      "(lam () (handle (app (var async.scope) (lam () (app (var print) (lit \"x\")))) (ret (pvar \
+       v) (var v)) (opclause print ((pwild)) k (app (var k) (tuple))) (opclause read-line () k \
+       (app (var k) (lit \"\")))))",
+      None );
   ]
 
 (** TS.2 cases on the production State instance declarations. *)

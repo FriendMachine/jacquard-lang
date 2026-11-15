@@ -477,7 +477,10 @@ let read_name state =
   in
   if spelling = "_" then located state start_pos (Ident spelling)
   else if List.mem spelling keywords then located state start_pos (Keyword spelling)
-  else if Surface_name.valid_lower_name spelling || Option.is_some (Surface_name.of_pascal spelling)
+  else if
+    Surface_name.valid_lower_name spelling
+    || Option.is_some (Surface_name.of_pascal spelling)
+    || Option.is_some (Surface_name.of_pascal_task_twin spelling)
   then located state start_pos (Ident spelling)
   else fail state start_pos "E1211" (Printf.sprintf "malformed surface identifier `%s`" spelling)
 

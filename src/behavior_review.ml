@@ -436,6 +436,24 @@ let prepare_version options side =
         | Types.TArrow (_, row, _) -> (Types.repr_row row).Types.effects
         | _ -> []
       in
+      (* a root twin (an effect a task in the case leaves to the root grant) is never modeled: a
+         --handle handler runs around the task and never sees its operations *)
+      let* () =
+        match List.find_map Types.task_twin_base row_effects with
+        | Some base ->
+            let ename =
+              match Store.locate_internal final.store base with
+              | Ok { Store.decl = { Kernel.it = Kernel.DefEffect { ename; _ }; _ }; _ } ->
+                  Surface_name.render Surface_name.Effect ename
+              | _ -> "#" ^ String.sub (Hash.to_hex base) 0 12
+            in
+            refuse ~code:"E1012"
+              "the %s case runs a task that leaves effect `%s` to the root grant (`%s@task`); a \
+               --handle handler runs around the task and never sees its operations, so handle the \
+               effect inside the task"
+              (side_name side) ename ename
+        | None -> Ok ()
+      in
       let handled = List.map (fun o -> o.op_hash) operations in
       let missing effect_id =
         match Store.locate_internal final.store effect_id with

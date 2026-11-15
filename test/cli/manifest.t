@@ -98,7 +98,7 @@ only Async, so the documented fetch-all shape needs Net but not Async.
   $ jacquard check fetch-all.jac --print-sigs
   async.scope : forall a | e. (() ->{Async | e} a) ->{| e} TaskResult a
   forward : forall a b | e. ((b) ->{| e} a, b) ->{| e} a
-  fetch-all : (List Text) ->{Net} TaskResult (List (TaskResult Text))
+  fetch-all : (List Text) ->{Net@task} TaskResult (List (TaskResult Text))
   _ : TaskResult (List (TaskResult Text))
   $ jacquard check fetch-all.jac --manifest console
   error[E0814]: The program requires an effect that was not granted
@@ -126,7 +126,7 @@ the equation diagnostic retains the propagated Net effect.
   > JACQUARD
   $ jacquard check alias-launder.jac
   alias-launder.jac:11:1-69: error[E0804]: The value does not satisfy its annotation
-    Cause: equation definition `launder` does not match its signature: expected () ->{async} task text, got () ->{async, net | e} task text (a closed effect row cannot absorb extra effects; a stored definition passed as a thunk can be eta-expanded at the use site: (lam () (app (var f))))
+    Cause: equation definition `launder` does not match its signature: expected () ->{async} task text, got () ->{async, net@task | e} task text (a closed or rigid effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) leaves to the root grant, which a row naming only the effect does not include: write it in the annotation (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the task; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect inside the task)
     Next step: Change the value or its annotation so the two types agree.
   [1]
 

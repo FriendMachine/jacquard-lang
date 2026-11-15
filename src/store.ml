@@ -996,7 +996,10 @@ and ty_refs (t : Kernel.ty) : Hash.t list =
   | Kernel.TApp (head, args) -> ty_refs head @ List.concat_map ty_refs args
   | Kernel.TArrow (params, row, result) ->
       List.concat_map ty_refs params
-      @ List.filter_map (function Kernel.Hashed h -> Some h | _ -> None) row.Kernel.effects
+      (* a root twin ([E@task], {!Task_twin}) refers to its base effect's declaration *)
+      @ List.filter_map
+          (function Kernel.Hashed h -> Some (Task_twin.base h) | _ -> None)
+          row.Kernel.effects
       @ ty_refs result
   | Kernel.TTuple items -> List.concat_map ty_refs items
   | Kernel.TForall (_, _, body) -> ty_refs body

@@ -97,6 +97,7 @@ malformed source, path, or host-message byte in a string field is replaced with 
 | E0313 | declaration has an invalid explicit named-call ABI | `bad(label: (x, y)) = x` or repeated parameter labels |
 | E0314 | constructor named-call schema is ambiguous or malformed | using labels on a constructor with duplicate labels or an unlabeled field after a labeled field |
 | E0315 | a single source uses a constructor of an opaque type that it does not itself declare, by name or by explicit identity | `Heads` in a file run against a store where an earlier file declared `opaque type Coin = \| Heads \| Tails` |
+| E0316 | an effect row names the root twin `E@task` of an effect that has none: only Channel and the root-grantable effects (clock, console, dist, eval, fs, infer, net, secret) have a twin, the label such an effect carries outside a task that leaves it to the root grant | `t : () ->{State@task} ()` |
 
 ### Resolution warnings (W03xx)
 
@@ -173,6 +174,7 @@ malformed source, path, or host-message byte in a string field is replaced with 
 | E0836 | a capability type in a nominal declaration or user operation signature | `type Box = Box(StateRef Int)` |
 | E0837 | a task (an `async.spawn` child or an `async.scope` body) performs an effect, other than Async, Channel or a root-grantable effect, that no handler inside the task handles; a task runs on a fresh continuation, so a handler outside it never handles its operations | `all(fn () -> async.scope(fn () -> first(1)))` where `all` handles `first` |
 | W0801 | redundant match clause | a clause after `(pwild)` |
+| W0802 | a handler discharges an effect that a task in its body also performs and leaves to the root grant (shown as `name@task`); those operations never reach this handler. Best-effort: a handler inside a wrapper whose body is a parameter is not inspected | `handle async.scope(fn () -> print("x")) { ... print(s) resume k -> k(()) ... }` |
 
 E0817 has one bounded transformer exception: a direct clause lambda may capture
 `resume` when its `handle` expression is immediately applied once to syntactic
@@ -221,7 +223,7 @@ also emits E0817; consuming the captured resumption twice emits E0816.
 | E1007 | relational runs cannot be called equal under the selected observation policy | `relate --policy` where runs agree only on truncated prefixes, opaque kinds, uncoded failures, unfinished projections, or both stop incomplete |
 | E1010 | a behavior review's version does not check with the cases file, the cases file redeclares a version name or has a top-level expression, a named term is missing, or the prelude lacks the standard identities the review uses | `jacquard review run --entry assign` where the new version has no `assign` |
 | E1011 | the two versions' entry contracts (checked signature by identity and call labels) differ and no adapter with the old contract is named | the new `assign` takes its parameters in another order |
-| E1012 | a review domain is not a finite List or Distribution of its parameter's type, is empty, has invalid weights or unsupported values, a field or handler is impure or fails, or the case needs an operation no `--handle` models | `--domain sizes` where the entry performs `notify` without `--handle notify=ack` |
+| E1012 | a review domain is not a finite List or Distribution of its parameter's type, is empty, has invalid weights or unsupported values, a field or handler is impure or fails, or the case needs an operation no `--handle` models, or runs a task that leaves an effect to the root grant (`E@task`), which no `--handle` handler sees | `--domain sizes` where the entry performs `notify` without `--handle notify=ack` |
 | E1013 | the two versions' review domains are not equal | a domain names a version term whose values changed |
 | E1014 | the observation policy cannot apply to both versions: it is pinned to an interface, or lists an operation one version lacks | `--policy` with `interface=<hash>` |
 | E1015 | `--sample` without `--seed` (or the reverse), sampling a List domain, a sample count outside 1..`--max-cases`, or a non-positive `--max-cases` or `--fuel` | `--sample 5` alone |

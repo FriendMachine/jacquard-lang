@@ -174,8 +174,9 @@ its thunk row `{Async | e}` reaches the caller's row (since E0837 through a
 directional link between two tails rather than one shared tail, so nothing
 outside the child reaches the child's row). The dependency survives aliases, higher-order
 wrappers, returned closures, tuples, polymorphic row instantiation, and nested
-scopes. Executable concurrency fixtures pin `{Async, Net}` before a scope and
-`{Net}` after one, and reject misleading closed annotations; a caller row wider than the
+scopes. Executable concurrency fixtures pin `{Async, Net@task}` before a scope
+and `{Net@task}` after one (`Net@task` is the root twin the child's Net
+carries outside it, see `docs/concurrency.md`), and reject misleading closed annotations; a caller row wider than the
 child row, which the shared tail used to reject as cyclic, is now accepted.
 Generic operation typing remains unchanged. `Async` is still a reserved
 taxonomy name, while its implementation has progressed beyond a placeholder:

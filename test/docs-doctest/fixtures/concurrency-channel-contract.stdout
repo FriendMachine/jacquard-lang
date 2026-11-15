@@ -2,4 +2,4 @@ open-channel : forall a. (Int) ->{Channel} Result ChannelError (ChannelHandle a)
 send-one : forall a. (ChannelHandle a, a) ->{Channel} Result ChannelError ()
 recv-one : forall a. (ChannelHandle a) ->{Channel} Result ChannelError a
 close-channel : forall a. (ChannelHandle a) ->{Channel} ()
-spawn-send : forall a. (ChannelHandle a, a) ->{Async, Channel} Task (Result ChannelError ())
+spawn-send : forall a. (ChannelHandle a, a) ->{Async, Channel@task} Task (Result ChannelError ())

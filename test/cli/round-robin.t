@@ -123,9 +123,10 @@ itself retains its closed Check-only row.
   2 passed, 0 failed, 0 skipped, 0 refused
 
 The surface lane pins the rest of the checker-representable hostile matrix:
-yield resumes once, fail-fast exposes a cancelled child as the scope result,
-and a granted world case proves cancellation preempts the routed Console
-callback.
+yield resumes once and fail-fast exposes a cancelled child as the scope
+result. A Warp world case can no longer hold a task that prints, since its
+closed row does not admit `console@task` (see task-root-effects.t), so a
+granted program proves that cancellation preempts the routed Console call.
 
   $ cat > async-warp-matrix.jac <<'EOF_JAC'
   > async-yield-case =
@@ -145,27 +146,25 @@ callback.
   >       | Cancelled -> check.true(true, "fail-fast cancellation")
   >       | _ -> check.true(false, "fail-fast cancellation")
   >     }})
-  > async-routed-cancel =
-  >   wcase("preempts routed console", fn () -> {
-  >     let result = async.scope(fn () -> {
-  >       let child = async.spawn(fn () -> { async.yield(); print("must-not-run") })
-  >       async.cancel(child)
-  >       0
-  >     })
-  >     match result {
-  >       | Cancelled -> check.true(true, "routed cancellation")
-  >       | _ -> check.true(false, "routed cancellation")
-  >     }})
   > EOF_JAC
-  $ jacquard test async-warp-matrix.jac --no-cache --allow console --allow fs --allow net --allow clock > matrix.out
-  $ grep -c must-not-run matrix.out
-  0
-  [1]
+  $ jacquard test async-warp-matrix.jac --no-cache > matrix.out
   $ cat matrix.out
   PASS async-fail-fast-case/selects cancelled child (1 check)
-  PASS async-routed-cancel/preempts routed console (1 check)
   PASS async-yield-case/resumes after yield (1 check)
-  3 passed, 0 failed, 0 skipped, 0 refused
+  2 passed, 0 failed, 0 skipped, 0 refused
+  $ cat > routed-cancel.jac <<'EOF_JAC'
+  > async.scope(fn () -> {
+  >   let child = async.spawn(fn () -> { async.yield(); print("must-not-run") })
+  >   async.cancel(child)
+  >   0
+  > })
+  > EOF_JAC
+  $ jacquard run routed-cancel.jac --allow console > routed.out
+  $ grep -c must-not-run routed.out
+  0
+  [1]
+  $ cat routed.out
+  cancelled
 
 Child effects cannot be laundered through the closed Case row. This is the Warp
 checker-side refusal cell; the diagnostic retains the spawned child's `Net`
@@ -187,7 +186,7 @@ handler outside the task never handles it.
   > EOF_JAC
   $ jacquard check async-child-row.jac --manifest console
   async-child-row.jac:2:27-9:6: error[E0801]: Types do not agree
-    Cause: argument: expected () ->{check} (), got () ->{net, check | e} () (a closed effect row cannot absorb extra effects; a stored definition passed as a thunk can be eta-expanded at the use site: (lam () (app (var f))))
+    Cause: argument: expected () ->{check} (), got () ->{net@task, check | e} () (a closed or rigid effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) leaves to the root grant, which a row naming only the effect does not include: write it in the annotation (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the task; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect inside the task)
     Next step: the expected side comes from the surrounding context; make both sides agree
   [1]
 

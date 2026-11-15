@@ -48,9 +48,32 @@ Notes for the next release's upgrade section, collected as changes land:
   `(() ->{Async | e} a) ->{| e} TaskResult a`: give it two, as in
   `forall a | e e1. (() ->{Async | e1} a) ->{| e} TaskResult a`), and every
   effect a task performs, granted ones included, still appears in the caller's
-  row for `--allow` and manifests. Not yet checked: a built-in grantable effect
-  (such as `console` or `dist`) that a task performs under an in-language
-  handler around the task (such as `dist.enumerate` or a user Console handler)
-  still checks, although the task's operation goes to the root grant at run
-  time; a follow-up slice adds that check. `docs/concurrency.md` states the
-  rule.
+  row for `--allow` and manifests. `docs/concurrency.md` states the rule.
+- **Effects a task leaves to the root are charged to the root.** A
+  root-grantable effect (such as `console` or `dist`) or Channel that a task
+  performs under an in-language handler written around the task (such as
+  `console.scripted`, `dist.enumerate`, `clock.fixed` or a user Console
+  handler) is no longer discharged by that handler, which never sees the
+  task's operations. Previously such a program checked as pure and its
+  child's operation went to the root grant anyway, or failed without it. Now
+  a root-grantable effect needs its root grant (`--allow`, E0814 in manifests,
+  host preflight and Warp world grants): grant it or handle it inside the
+  task. Channel needs no grant; the scheduler manages it. Outside the task
+  such an effect carries a separate label, its root twin, which printed
+  signatures, interfaces and diagnostics show as `Console@task` (signatures)
+  or `console@task` (diagnostics). So the printed signature of a function
+  whose task leaves an effect to the root changes, for example from
+  `() ->{Console} TaskResult ()` to `() ->{Console@task} TaskResult ()`;
+  signatures of other functions are unchanged. An effect row written in the
+  program may name the twin (`Console@task`; only Channel and the
+  root-grantable effects have one, E0316 otherwise), so printed signatures can
+  be written back as annotations. An annotation that names only `Console` on
+  such a function, open or closed, is now a mismatch: write `Console@task`,
+  remove the annotation, or handle the effect inside the task. A row the
+  prelude fixes cannot name the twin, so a Warp `Case`, `Prop` or `WCase` whose
+  body runs a task that leaves an effect to the root, and a `judge.model`
+  model callback (closed `{Infer}`) that does, are now refused: handle the
+  effect inside the task. A host-protocol target may carry the twin in its
+  closed annotation; its pinned interface lists the base effect. A handler
+  written directly around such a task gets warning W0802, and a behavior
+  review refuses a case whose task leaves an effect to the root (E1012).

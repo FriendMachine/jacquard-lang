@@ -221,9 +221,10 @@ a --record-policy needs a source that checks on its own.
   exit=0
   $ jacquard run use.jac --store st --record st-policy.log --record-policy none.policy > st-policy.out 2>&1; echo "exit=$?"
   exit=1
-  $ head -2 st-policy.out
+  $ head -3 st-policy.out
   error[E1005]: Observation policy is invalid or refused
-    Cause: a --record-policy is validated against the source checked on its own, and this source does not check without its --store; record it with the default policy or make the source self-contained
+    Cause: the --record-policy could not be checked: a policy is checked against the source on its own, without the definitions --store holds, and on its own this source has unknown names (below)
+    Next step: Record with the default policy (omit --record-policy), or make the source define what it uses; correct any name below that is a mistake.
 
 A definition group that a persistent store already holds in another member
 order still records the current source's sites.
@@ -353,3 +354,22 @@ and the draw count still follows the name as written.
   pick-<secret redacted>
   choice-name draw=1 bytes=22
   pick-<secret redacted>
+
+A splice two quasiquote levels down (quote { quote { unquote(unquote(...)) } })
+is live in the outer quote, so its group references are renumbered too: a
+reordered group whose members reach each other only through such splices still
+records source sites.
+
+  $ mkdir nqgrp && printf 'first(n) = if eq(n, 0) then { print("first"); quote { 1 } } else quote { quote { unquote(unquote(second(sub(n, 1)))) } }\n\nsecond(n) = if eq(n, 0) then { print("second"); quote { 2 } } else quote { quote { unquote(unquote(first(sub(n, 1)))) } }\n' > nqbefore.jac
+  $ jacquard run nqbefore.jac --store nqgrp > /dev/null; echo "exit=$?"
+  exit=0
+  $ printf 'second(n) = if eq(n, 0) then { print("second"); quote { 2 } } else quote { quote { unquote(unquote(first(sub(n, 1)))) } }\n\nfirst(n) = if eq(n, 0) then { print("first"); quote { 1 } } else quote { quote { unquote(unquote(second(sub(n, 1)))) } }\n\nfirst(1)\n\nsecond(1)\n' > nqafter.jac
+  $ jacquard run nqafter.jac --store nqgrp --allow console --record nqgrp.log; echo "exit=$?"
+  second(quote (quote (unquote (lit 2))))
+  first(quote (quote (unquote (lit 1))))
+  exit=0
+  $ grep -A1 '^site' nqgrp.log | grep -v '^--'
+  site bytes=21
+  nqafter.jac:1:32-1:47
+  site bytes=21
+  nqafter.jac:3:31-3:45

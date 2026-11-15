@@ -41,9 +41,10 @@ recorded.
   the policy's field limit (`truncated total=T` beyond it). A policy given with
   `--record-policy` must apply to the program exactly as for `relate --policy`:
   every operation it lists exists, and an interface pin matches (E1005 before
-  the run). That check reads the source on its own, so a source that only
-  checks against definitions a `--store` already holds is refused with E1005
-  when a `--record-policy` is given; record it with the default policy.
+  the run). That check reads the source on its own, without the definitions a
+  `--store` holds, so with `--store` a source that has unknown names on its own
+  is refused with E1005 when a `--record-policy` is given (the policy itself is
+  then not checked); record it with the default policy.
 - **Choices inside inference.** A `sample` that an inference driver captures
   (likelihood weighting, enumeration) is recorded as a `choice` step with its
   distribution, and its result is `missing`, as in OBS.1: the driver, not the
@@ -60,7 +61,9 @@ recorded.
 - **File.** The log path is reserved before the run (created empty, owner-only
   0600, exclusively: an existing path is refused with E1016 and never replaced)
   and written once after the run through the same descriptor, so nothing at the
-  path can be substituted in between.
+  path can be substituted in between. If that write fails (E1016), no partial
+  log is left: the file is emptied through the descriptor and removed while
+  the path still names it.
 
 ## 2. Positions
 
@@ -73,7 +76,9 @@ objects (`Store.retain_source_declarations`, session-only, never persisted), so
 sites name the user's file, line and column. A definition group the store
 already holds with its members in another order is served in the stored order
 (members and group references renumbered, checked to hash to the stored
-object), so its sites still name the current source. A site the evaluator cannot know
+object), so its sites still name the current source; group references inside
+live unquote splices are renumbered too, at any quasiquote depth, by the same
+level rule hashing and resolution use. A site the evaluator cannot know
 (an operation applied by a builtin or host callback) is `site unknown`. An
 operation performed inside a prelude function, or inside a declaration this
 session reached only by hash from an earlier store, names that declaration's
@@ -173,7 +178,8 @@ end steps=<k> exit=<status> | end steps=<k> bounded=steps|bytes
   store's prelude manifest.
 - `Exploration_log.parse` accepts exactly the canonical bytes
   `Exploration_log.serialize` writes and refuses anything else (another format,
-  trailing bytes, a wrong step count, non-canonical numbers or hashes).
+  trailing bytes, a wrong step count, argument indices that are repeated or not
+  ascending, non-canonical numbers, or hashes not in lowercase hex).
 
 The header differs from the sketch in DES.0 §4.1 by the owner's format
 decision: `program source` is HASH_V0 of the file bytes (a recording is of a

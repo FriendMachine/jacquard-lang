@@ -126,7 +126,7 @@ the equation diagnostic retains the propagated Net effect.
   > JACQUARD
   $ jacquard check alias-launder.jac
   alias-launder.jac:11:1-69: error[E0804]: The value does not satisfy its annotation
-    Cause: equation definition `launder` does not match its signature: expected () ->{async} task text, got () ->{async, net | e} task text (a closed effect row cannot absorb extra effects; a stored definition passed as a thunk can be eta-expanded at the use site: (lam () (app (var f))))
+    Cause: equation definition `launder` does not match its signature: expected () ->{async} task text, got () ->{async, net@task | e} task text (a closed effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) leaves to the root grant, and a row that names the effect does not include it: leave the row open or handle the effect inside the task)
     Next step: Change the value or its annotation so the two types agree.
   [1]
 

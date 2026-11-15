@@ -173,6 +173,7 @@ malformed source, path, or host-message byte in a string field is replaced with 
 | E0836 | a capability type in a nominal declaration or user operation signature | `type Box = Box(StateRef Int)` |
 | E0837 | a task (an `async.spawn` child or an `async.scope` body) performs an effect, other than Async, Channel or a root-grantable effect, that no handler inside the task handles; a task runs on a fresh continuation, so a handler outside it never handles its operations | `all(fn () -> async.scope(fn () -> first(1)))` where `all` handles `first` |
 | W0801 | redundant match clause | a clause after `(pwild)` |
+| W0802 | a handler discharges an effect that a task in its body also performs and leaves to the root grant (shown as `name@task`); those operations never reach this handler. Best-effort: a handler inside a wrapper whose body is a parameter is not inspected | `handle async.scope(fn () -> print("x")) { ... print(s) resume k -> k(()) ... }` |
 
 E0817 has one bounded transformer exception: a direct clause lambda may capture
 `resume` when its `handle` expression is immediately applied once to syntactic

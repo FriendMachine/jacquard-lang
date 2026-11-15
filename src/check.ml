@@ -72,6 +72,9 @@ type ctx = {
           scrutinee types are fully solved *)
   mutable review_warnings : Diag.t list;
       (** surface-only positional-call warnings collected during inference, newest first *)
+  mutable handle_sites : handle_site list;
+      (** handlers recorded for the W0802 pass, which runs after inference so the body rows are
+          solved, newest first *)
   mutable origins : (Hash.t * string) list;
       (** effect hash -> a callee that introduced it (the manifest diagnostic's call-chain endpoint,
           W3.6) *)
@@ -90,6 +93,9 @@ type ctx = {
 }
 
 and match_site = { scrutinee_ty : Types.ty; arms : Kernel.clause list; site_meta : Meta.t }
+
+and handle_site = { handle_meta : Meta.t; discharged : Hash.t list; body_row : Types.row }
+(** A handler the W0802 pass inspects: the effects it discharges and its body's row. *)
 
 (** [store ctx] returns the declaration store used by the checker. *)
 let store ctx = ctx.store
@@ -383,22 +389,37 @@ let instance_refusal ?meta code detail =
     ~summary:(diagnostic_summary code) ~cause:detail ~next_step:(diagnostic_next_step code)
     ~contrast:None ()
 
-(** [task_may_leave_unhandled identity] is the E0837 policy: an effect a task may leave to its
-    surroundings, because the scheduler (Async, Channel) or a root grant handles it there. Every
-    other effect must be handled inside the task, since a task runs on a fresh continuation and no
-    handler outside it ever handles its operations. Identity decides: a user effect that reuses a
-    built-in spelling is not root-grantable. *)
-let task_may_leave_unhandled identity =
-  let hex = Hash.to_hex identity in
-  String.equal hex Concurrency_contract.async_effect_hash
-  || String.equal hex Channel_contract.channel_effect_hash
-  ||
+(** [root_grantable identity] holds when a root grant can handle effect [identity]: a registry
+    effect whose grant name is root-grantable. Identity decides, never the spelling. *)
+let root_grantable identity =
   match Effect_registry.find_canonical identity with
   | Some metadata ->
       List.mem (Effect_registry.root_grant_name metadata) Effect_registry.root_grantable_names
   | None -> false
 
-let () = Types.task_effect_allowed := task_may_leave_unhandled
+(** [task_may_leave_unhandled identity] is the E0837 policy: an effect a task may leave to its
+    surroundings, because the scheduler (Async, Channel) or a root grant handles it there. Every
+    other effect must be handled inside the task, since a task runs on a fresh continuation and no
+    handler outside it ever handles its operations. Identity decides: a user effect that reuses a
+    built-in spelling is not root-grantable. A root twin ([E@task], {!Types.task_twin}) is admitted:
+    it is an admitted effect a nested task already left to the root. *)
+let task_may_leave_unhandled identity =
+  let hex = Hash.to_hex identity in
+  String.equal hex Concurrency_contract.async_effect_hash
+  || String.equal hex Channel_contract.channel_effect_hash
+  || Types.is_task_twin identity || root_grantable identity
+
+(** [task_outward_label identity] is the label an admitted effect a task leaves unhandled carries
+    outside the task: the scheduler's Async stays itself (the spawn or scope call is an Async
+    operation and the scheduler handles it), and every other effect becomes its root twin, which no
+    handler discharges, so a handler around the task cannot hide it from the root grant. *)
+let task_outward_label identity =
+  if String.equal (Hash.to_hex identity) Concurrency_contract.async_effect_hash then identity
+  else Types.task_twin identity
+
+let () =
+  Types.task_effect_allowed := task_may_leave_unhandled;
+  Types.task_outward_label := task_outward_label
 
 (* Stored declarations have already crossed the public resolver/checker boundary. Their resolved
    bodies may use a hidden prelude capability hash, while source expressions must use public
@@ -419,6 +440,8 @@ let with_trusted_store_refs ctx f =
       f ())
 
 let name_of ctx h =
+  (* a root twin is named by its base effect; diagnostics add [@task] when rendering rows *)
+  let h = Types.base_effect h in
   match locate ctx h with
   | Ok { Store.decl; role; _ } -> (
       match (decl.Kernel.it, role) with
@@ -433,7 +456,8 @@ let name_of ctx h =
       | _ -> String.sub (Hash.to_hex h) 0 8)
   | Error _ -> String.sub (Hash.to_hex h) 0 8
 
-let show_ty ctx t = Types.show ~name_of:(name_of ctx) t
+(** [show_ty ctx t] renders [t] for a diagnostic; a root twin shows as [name@task]. *)
+let show_ty ctx t = Types.show ~name_of:(name_of ctx) ~mark_task_effects:true t
 
 (** [refusal_name_of ctx identity] names an effect in a refusal raised during unification (E0833,
     E0837). A user effect whose name collides with a registry effect's name is qualified
@@ -1047,6 +1071,19 @@ let check_decl_payload_storage ?meta ?(effectself = None) ~parameters ty =
 
 (* Constructor scheme: forall vars. (fields) ->{} T vars  (nullary: T vars). Field types are
    declaration types: tyvars come from the decl header, self-references are the decl. *)
+
+(** [admit_task_twins field] adds to a thunk field's row the root twin of each root-grantable effect
+    it lists, so a task inside the thunk may leave those effects to the root. Any other field is
+    returned unchanged. *)
+let admit_task_twins field =
+  match field with
+  | TArrow (params, row, result) ->
+      let row = repr_row row in
+      let twins = List.map Types.task_twin (List.filter root_grantable row.effects) in
+      TArrow
+        (params, { row with effects = List.sort_uniq Hash.compare (row.effects @ twins) }, result)
+  | field -> field
+
 let rec con_scheme ctx ?meta (h : Hash.t) : scheme =
   (* a capability exists only as its scope's token, registered or not (design §10 A2.1) *)
   if Instance_contract.is_private_carrier h then
@@ -1085,6 +1122,13 @@ let rec con_scheme ctx ?meta (h : Hash.t) : scheme =
           (conv_decl_ty ctx cenv ~self:(tname, result) fl.Kernel.fty)
       in
       let fields = List.map conv_field c.Kernel.fields in
+      (* a world case's thunk may run tasks that leave its root-grantable effects to the root:
+         its closed row admits their root twins as well (a hermetic Case or Prop row does not) *)
+      let fields =
+        match Prelude_identity.pinned ctx.store "wcase" Resolve.KCon with
+        | Some wcase when Hash.equal wcase h -> List.map admit_task_twins fields
+        | Some _ | None -> fields
+      in
       let ty = match fields with [] -> result | fields -> TArrow (fields, empty_row, result) in
       { ty; gen_level = ctx.level }
   | Ok _ -> err ?meta ~code:"E0805" "hash %s is not a constructor" (Hash.to_hex h)
@@ -1467,8 +1511,18 @@ let op_scheme ctx ?meta ?(clause = false) (h : Hash.t) : scheme =
               Types.check_task_effects child.effects;
               match child.tail with
               | RVar ({ contents = RUnbound ({ level; _ } as unbound) } as cell) ->
+                  (* the child's fixed effects leave it as their outward labels (root twins) *)
                   let outward =
-                    { child with tail = new_rvar ~lacks_instances:true level; instances = [] }
+                    {
+                      effects =
+                        List.sort_uniq Hash.compare (List.map task_outward_label child.effects);
+                      payloads =
+                        List.map
+                          (fun (hash, args) -> (task_outward_label hash, args))
+                          child.payloads;
+                      tail = new_rvar ~lacks_instances:true level;
+                      instances = [];
+                    }
                   in
                   cell :=
                     RUnbound
@@ -1759,7 +1813,12 @@ let rec term_scheme ctx ?meta (h : Hash.t) : scheme =
               if List.exists (Hash.equal decl_hash) ctx.checking then
                 err ?meta ~code:"E0805" "cyclic dependency between declarations reached the checker"
               else begin
-                with_trusted_store_refs ctx (fun () -> check_group ctx decl);
+                (* W0802 belongs to the form being checked: a stored dependency checked on demand
+                   was warned about when it was itself checked as a form *)
+                let handle_sites = ctx.handle_sites in
+                Fun.protect
+                  ~finally:(fun () -> ctx.handle_sites <- handle_sites)
+                  (fun () -> with_trusted_store_refs ctx (fun () -> check_group ctx decl));
                 match Hashtbl.find_opt ctx.term_sigs h with
                 | Some s -> s
                 | None -> err ?meta ~code:"E0805" "term %s did not check" (Hash.to_hex h)
@@ -1929,6 +1988,8 @@ and infer_expr ?(immediate_transformer = false) ctx env ~(ambient : row ref) ~(r
            | Some name ->
                List.iter
                  (fun h ->
+                   (* a root twin is charged to its base effect at the root *)
+                   let h = Types.base_effect h in
                    if not (List.mem_assoc h ctx.origins) then
                      ctx.origins <- (h, name) :: ctx.origins)
                  (repr_row frow).effects
@@ -2116,6 +2177,9 @@ and infer_expr ?(immediate_transformer = false) ctx env ~(ambient : row ref) ~(r
           (handled @ required.effects)
       in
       let body_ty = infer ctx env ~ambient:body_ambient ~required:body_required body in
+      if discharged <> [] then
+        ctx.handle_sites <-
+          { handle_meta = meta; discharged; body_row = !body_ambient } :: ctx.handle_sites;
       let solved_body = repr_row !body_ambient in
       let continuation_row =
         {
@@ -2341,6 +2405,7 @@ and infer_scoped ctx env ~ambient ~required ~meta ~callee (registration : instan
     (fun name ->
       List.iter
         (fun h ->
+          let h = Types.base_effect h in
           if not (List.mem_assoc h ctx.origins) then ctx.origins <- (h, name) :: ctx.origins)
         outward.effects)
     callee;
@@ -3015,6 +3080,7 @@ let make_ctx ?(instances = true) (store : Store.t) : (ctx, Diag.t list) result =
           checking = [];
           sites = [];
           review_warnings = [];
+          handle_sites = [];
           origins = [];
           tier_apps = [];
           tier_ops = [];
@@ -3040,6 +3106,46 @@ let make_ctx ?(instances = true) (store : Store.t) : (ctx, Diag.t list) result =
   | _, _, _, _, _, Error ds ->
       Error ds
 
+(** [check_task_handlers ctx] is the W0802 pass over the handlers recorded during inference, run
+    after it so their body rows are solved. A handler that discharges an effect [E] whose body row
+    also holds the root twin [E@task] wraps a task that performs [E]: those operations go to the
+    root grant, not to this handler. The pass is best-effort: a handler inside a library wrapper
+    whose body row is a generalized parameter row never shows the twin. It returns the warnings in
+    source order and clears the recorded sites; it never fails. *)
+let check_task_handlers ctx : Diag.t list =
+  let sites = List.rev ctx.handle_sites in
+  ctx.handle_sites <- [];
+  List.filter_map
+    (fun { handle_meta; discharged; body_row } ->
+      let bypassed =
+        (repr_row body_row).effects
+        |> List.filter_map (fun label ->
+            match Types.task_twin_base label with
+            | Some base when List.exists (Hash.equal base) discharged -> Some base
+            | Some _ | None -> None)
+        |> List.sort_uniq Hash.compare
+      in
+      match bypassed with
+      | [] -> None
+      | bypassed ->
+          let names = List.map (fun h -> "`" ^ name_of ctx h ^ "`") bypassed in
+          let twins = List.map (fun h -> "`" ^ name_of ctx h ^ "@task`") bypassed in
+          Some
+            (Diag.warning ?span:(Meta.span handle_meta) ~domain:Checker ~code:"W0802"
+               ~summary:"A handler does not handle the operations of a task it encloses"
+               ~cause:
+                 (Printf.sprintf
+                    "this handler handles %s, but a task (an async.spawn child or an async.scope \
+                     body) in its body also performs %s and leaves it unhandled; a task runs on a \
+                     fresh continuation, so those operations go to the root grant, not to this \
+                     handler, and the row keeps %s"
+                    (String.concat ", " names) (String.concat ", " names) (String.concat ", " twins))
+               ~next_step:
+                 "Handle the effect inside the thunk passed to async.spawn or async.scope, or \
+                  grant it at the root."
+               ~contrast:None ()))
+    sites
+
 type top_sig = {
   names : (string * scheme) list;  (** defterm members, or [("_", scheme)] for an expr *)
   row : row option;  (** an expression's inferred requirements (its manifest) *)
@@ -3057,6 +3163,7 @@ let check_top_with ?recovery_identity ~recovery ctx (top : Kernel.top) :
     (top_sig, Diag.t list) result =
   ctx.sites <- [];
   ctx.review_warnings <- [];
+  ctx.handle_sites <- [];
   match
     let partial =
       match top with
@@ -3122,8 +3229,9 @@ let check_top_with ?recovery_identity ~recovery ctx (top : Kernel.top) :
     let match_warnings =
       if recovery && Recovery_marker.top top then (
         ctx.sites <- [];
+        ctx.handle_sites <- [];
         [])
-      else check_matches ctx
+      else check_matches ctx @ check_task_handlers ctx
     in
     let warning_offset diagnostic =
       match Diag.span diagnostic with Some span -> span.Span.start_pos.offset | None -> max_int
@@ -3200,6 +3308,7 @@ module Recovery = struct
       checking = [];
       sites = [];
       review_warnings = [];
+      handle_sites = [];
       origins = [];
       tier_apps = [];
       tier_ops = [];
@@ -3423,6 +3532,7 @@ let checker_codes : (string * string) list =
     ("E0836", "capability type stored in a nominal declaration or operation signature");
     ("E0837", "effect performed in a task that no handler inside the task handles");
     ("W0801", "redundant match clause");
+    ("W0802", "handler around a task whose operations of the handled effect go to the root grant");
     ("W1206", "labeled API called with a positional Bool constructor literal");
     ("W1207", "labeled API called across a definite repeated-type positional parameter run");
     ("E1202", "recovery marker rejected by the strict checker");

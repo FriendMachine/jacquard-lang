@@ -187,7 +187,7 @@ handler outside the task never handles it.
   > EOF_JAC
   $ jacquard check async-child-row.jac --manifest console
   async-child-row.jac:2:27-9:6: error[E0801]: Types do not agree
-    Cause: argument: expected () ->{check} (), got () ->{net, check | e} () (a closed effect row cannot absorb extra effects; a stored definition passed as a thunk can be eta-expanded at the use site: (lam () (app (var f))))
+    Cause: argument: expected () ->{check} (), got () ->{net@task, check | e} () (a closed effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) leaves to the root grant, and a row that names the effect does not include it: leave the row open or handle the effect inside the task)
     Next step: the expected side comes from the surrounding context; make both sides agree
   [1]
 

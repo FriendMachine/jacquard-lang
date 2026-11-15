@@ -433,7 +433,10 @@ let prepare_version options side =
     let* () =
       let row_effects =
         match Types.repr (Check.term_scheme final.checker case_h).Types.ty with
-        | Types.TArrow (_, row, _) -> (Types.repr_row row).Types.effects
+        (* a root twin (an effect a task leaves to the root) needs its base effect modeled *)
+        | Types.TArrow (_, row, _) ->
+            List.sort_uniq Hash.compare
+              (List.map Types.base_effect (Types.repr_row row).Types.effects)
         | _ -> []
       in
       let handled = List.map (fun o -> o.op_hash) operations in

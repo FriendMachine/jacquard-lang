@@ -127,6 +127,64 @@ let new_rvar ?(lacks_instances = false) ?(task_row = false) ?(task_out = []) lev
     cannot observe a refusal. *)
 let task_effect_allowed : (Hash.t -> bool) ref = ref (fun _ -> true)
 
+(* ------------------------------------------------------------------ *)
+(* Root-twin labels                                                    *)
+(* ------------------------------------------------------------------ *)
+
+(* twin raw digest -> base effect identity. A mutex guards it because editor recovery may check
+   in several domains at once; entries are deterministic, so a race could only repeat one. *)
+let task_twins : (string, Hash.t) Hashtbl.t = Hashtbl.create 16
+let task_twins_lock = Mutex.create ()
+
+(** [task_twin_base label] is [Some base] when [label] is the root twin of effect [base] (see
+    {!task_twin}), and [None] for every other identity. It never fails. *)
+let task_twin_base label =
+  Mutex.protect task_twins_lock (fun () -> Hashtbl.find_opt task_twins (Hash.to_raw label))
+
+(** [is_task_twin label] holds when [label] is a root twin. *)
+let is_task_twin label = Option.is_some (task_twin_base label)
+
+(** [task_twin base] is the root twin [base@task]: the label an effect a task leaves unhandled
+    carries in the rows outside the task. Its identity is the deterministic hash
+    [HASH_V0("jacquard/task-root-effect/v1\000" ^ raw base)], and the function is idempotent (the
+    twin of a twin is itself). No handler, declaration or source spelling names a twin, so no
+    language handler discharges it: it stays in the row and reaches the root grant, which charges
+    its base effect (via {!effect_identities}). It never fails. *)
+let task_twin base =
+  if is_task_twin base then base
+  else
+    let twin = Hash.of_string ("jacquard/task-root-effect/v1\000" ^ Hash.to_raw base) in
+    Mutex.protect task_twins_lock (fun () -> Hashtbl.replace task_twins (Hash.to_raw twin) base);
+    twin
+
+(** [base_effect label] is the base effect of a root twin and [label] itself otherwise. *)
+let base_effect label = Option.value (task_twin_base label) ~default:label
+
+(** [task_outward_label] maps an effect a task leaves unhandled to the label it carries in the rows
+    outside the task (the spawn or scope call row). {!Check} installs the policy when it is linked:
+    every admitted effect except the scheduler's Async becomes its {!task_twin}. The default is the
+    identity, so code that never links the checker keeps plain labels. *)
+let task_outward_label : (Hash.t -> Hash.t) ref = ref Fun.id
+
+(** The sentence a row mismatch involving a root twin appends to its detail. *)
+let task_twin_explanation =
+  "; `name@task` marks an effect a task (an async.spawn child or an async.scope body) leaves to \
+   the root grant, and a row that names the effect does not include it: leave the row open or \
+   handle the effect inside the task"
+
+(** [twin_note labels] is {!task_twin_explanation} when [labels] holds a root twin, and empty
+    otherwise. *)
+let twin_note labels = if List.exists is_task_twin labels then task_twin_explanation else ""
+
+(** [absorb_error extra] is the detail of a closed or rigid row that cannot absorb [extra]: the
+    root-twin explanation when [extra] holds a twin, and the eta-expansion hint otherwise. *)
+let absorb_error extra =
+  if List.exists is_task_twin extra then
+    "a closed effect row cannot absorb extra effects" ^ task_twin_explanation
+  else
+    "a closed effect row cannot absorb extra effects; a stored definition passed as a thunk can be \
+     eta-expanded at the use site: (lam () (app (var f)))"
+
 (** [closed_row ~payloads effects] builds an exact row. Payload keys must name effects in the row;
     duplicate payload constraints are checked when the row is normalized. *)
 let closed_row ?(payloads = []) effects =
@@ -497,17 +555,15 @@ and unify_rows (ra : row) (rb : row) : unit =
   let only_a_any = only_a <> [] || only_ia <> [] and only_b_any = only_b <> [] || only_ib <> [] in
   match (ra.tail, rb.tail) with
   | RClosed, RClosed ->
-      if only_a_any || only_b_any then raise (Unify_error "closed effect rows differ")
+      if only_a_any || only_b_any then
+        raise (Unify_error ("closed effect rows differ" ^ twin_note (only_a @ only_b)))
   | RSkolem (i, _), RSkolem (j, _) when i = j ->
       if only_a_any || only_b_any then
-        raise (Unify_error "effect rows with the same rigid tail differ")
+        raise
+          (Unify_error ("effect rows with the same rigid tail differ" ^ twin_note (only_a @ only_b)))
   | RClosed, RVar rv | RSkolem _, RVar rv ->
       (* the flexible side may not have extra effects the fixed side lacks *)
-      if only_b_any then
-        raise
-          (Unify_error
-             "a closed effect row cannot absorb extra effects; a stored definition passed as a \
-              thunk can be eta-expanded at the use site: (lam () (app (var f)))")
+      if only_b_any then raise (Unify_error (absorb_error only_b))
       else
         bind_rvar rv
           {
@@ -517,11 +573,7 @@ and unify_rows (ra : row) (rb : row) : unit =
             tail = ra.tail;
           }
   | RVar rv, RClosed | RVar rv, RSkolem _ ->
-      if only_a_any then
-        raise
-          (Unify_error
-             "a closed effect row cannot absorb extra effects; a stored definition passed as a \
-              thunk can be eta-expanded at the use site: (lam () (app (var f)))")
+      if only_a_any then raise (Unify_error (absorb_error only_a))
       else
         bind_rvar rv
           {
@@ -636,12 +688,19 @@ and check_task_effects effects =
                     (List.map (fun identity -> "`" ^ name_of identity ^ "`") refused)) ))
 
 (** [push_outward ~effects ~payloads outward] adds a task's fixed [effects] and their [payloads] to
-    one outward row, as {!require_effects} would: a flexible tail absorbs the missing labels. A
-    closed or rigid outward row that lacks one raises [Unify_error]. Pushing stops at labels the row
-    already has, so an outward row that resolves back into the task's own chain (it was linked just
-    before) is a no-op; each push adds labels from the fixed set [effects] to some chain, so a cycle
-    of outward rows terminates. *)
+    one outward row, as {!require_effects} would: a flexible tail absorbs the missing labels. Each
+    effect first becomes its outward label ({!task_outward_label}: the root twin [E@task] for every
+    admitted effect but Async), with its payload re-keyed, so a handler outside the task cannot
+    discharge it. A closed or rigid outward row that lacks one raises [Unify_error]. Pushing stops
+    at labels the row already has, so an outward row that resolves back into the task's own chain
+    (it was linked just before) is a no-op; the labelling is idempotent and each push adds labels
+    from a fixed set to some chain, so a cycle of outward rows terminates. *)
 and push_outward ~effects ~payloads outward =
+  let label = !task_outward_label in
+  let payloads =
+    List.map (fun (hash, args) -> (label hash, args)) (payloads_for effects payloads)
+  in
+  let effects = List.sort_uniq Hash.compare (List.map label effects) in
   let outward = repr_row outward in
   ignore (merge_payloads outward.payloads (payloads_for outward.effects payloads));
   match (hash_set_diff effects outward.effects, outward.tail) with
@@ -655,11 +714,12 @@ and push_outward ~effects ~payloads outward =
           tail = new_rvar level;
         }
   | _, RVar { contents = RLink _ } -> assert false (* repr_row eliminated links *)
-  | _, (RClosed | RSkolem _) ->
+  | missing, (RClosed | RSkolem _) ->
       raise
         (Unify_error
-           "a closed effect row cannot absorb extra effects: an effect a task performs also \
-            belongs to the row of the async.spawn or async.scope call that starts it")
+           ("a closed effect row cannot absorb extra effects: an effect a task performs also \
+             belongs to the row of the async.spawn or async.scope call that starts it"
+           ^ if List.exists is_task_twin missing then task_twin_explanation else ""))
 
 (** [include_rows sub into] returns the directional union recording that [sub] is evaluated in
     [into]. It never modifies either operand. Open tails are unified so later specialization of
@@ -1037,10 +1097,12 @@ let quantified ?(walk = `Complete) (s : scheme) : int list * int list =
   (List.rev !tids, List.rev !rids)
 
 (** [effect_identities row] is the sorted, deduplicated set of effect identities a normalized row
-    mentions: its ambient effects and the effects of its instance entries. Authority, display and
-    manifest consumers use it (design §9 A1.8). *)
+    mentions: its ambient effects and the effects of its instance entries, with each root twin
+    [E@task] replaced by its base effect [E] ({!base_effect}), since the root grant handles a task's
+    unhandled operations. Authority, display and manifest consumers use it (design §9 A1.8). *)
 and effect_identities (row : row) =
-  List.sort_uniq Hash.compare (row.effects @ List.map (fun entry -> entry.effect_id) row.instances)
+  List.sort_uniq Hash.compare
+    (List.map base_effect row.effects @ List.map (fun entry -> entry.effect_id) row.instances)
 
 (** [row_holds_instances row] holds when [row] has an instance entry or a label anywhere, including
     inside its payloads and the latent rows they contain. A top-level expression's row must not
@@ -1112,9 +1174,11 @@ and row_mentions_label id row =
 (** Render a type for signatures and diagnostics. [name_of] maps a type hash to its display name;
     [effect_name_of] can provide a distinct effect namespace projection and defaults to [name_of].
     Quantified/unbound type vars print as [a b c ...], row vars as [e e1 e2 ...], and skolems by
-    their source names. *)
+    their source names. A root twin prints as its base effect, so signatures are unchanged, unless
+    [mark_task_effects] is set (diagnostics): it then prints as [name@task] beside any plain [name].
+*)
 let show ?(name_of = fun h -> String.sub (Hash.to_hex h) 0 8) ?effect_name_of ?(surface = false)
-    (t : ty) : string =
+    ?(mark_task_effects = false) (t : ty) : string =
   let effect_name_of = Option.value ~default:name_of effect_name_of in
   let tnames : (int, string) Hashtbl.t = Hashtbl.create 8 in
   let rnames : (int, string) Hashtbl.t = Hashtbl.create 8 in
@@ -1142,7 +1206,16 @@ let show ?(name_of = fun h -> String.sub (Hash.to_hex h) 0 8) ?effect_name_of ?(
   let show_row (r : row) =
     let r = repr_row r in
     (* an instance entry displays as its effect name (A1.8) *)
-    let effs = List.map effect_name_of (effect_identities r) in
+    let effs =
+      if mark_task_effects then
+        List.sort_uniq Hash.compare
+          (r.effects @ List.map (fun (entry : instance) -> entry.effect_id) r.instances)
+        |> List.map (fun identity ->
+            match task_twin_base identity with
+            | Some base -> effect_name_of base ^ "@task"
+            | None -> effect_name_of identity)
+      else List.map effect_name_of (effect_identities r)
+    in
     match r.tail with
     | RClosed -> String.concat ", " effs
     | RVar { contents = RUnbound { id; _ } } ->

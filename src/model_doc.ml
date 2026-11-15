@@ -681,10 +681,13 @@ let prepare ~prelude_dir ~root ~file doc =
             :: ds)
     in
     let handled = always @ match r.r_driver with Run -> [] | Enumerate _ | Lw _ -> dist in
+    (* a driver never handles a root twin (an effect a task leaves to the root): it stays in the
+       world as its base effect *)
     let world =
       List.filter
         (fun h -> not (List.exists (Hash.equal h) handled))
         (Types.repr_row row).Types.effects
+      |> List.map Types.base_effect |> List.sort_uniq Hash.compare
     in
     let dependency =
       {

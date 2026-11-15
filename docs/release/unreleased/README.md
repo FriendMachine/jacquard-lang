@@ -48,9 +48,21 @@ Notes for the next release's upgrade section, collected as changes land:
   `(() ->{Async | e} a) ->{| e} TaskResult a`: give it two, as in
   `forall a | e e1. (() ->{Async | e1} a) ->{| e} TaskResult a`), and every
   effect a task performs, granted ones included, still appears in the caller's
-  row for `--allow` and manifests. Not yet checked: a built-in grantable effect
-  (such as `console` or `dist`) that a task performs under an in-language
-  handler around the task (such as `dist.enumerate` or a user Console handler)
-  still checks, although the task's operation goes to the root grant at run
-  time; a follow-up slice adds that check. `docs/concurrency.md` states the
-  rule.
+  row for `--allow` and manifests. `docs/concurrency.md` states the rule.
+- **Effects a task leaves to the root are charged to the root.** A
+  root-grantable effect (such as `console` or `dist`) or Channel that a task
+  performs under an in-language handler written around the task (such as
+  `console.scripted`, `dist.enumerate`, `clock.fixed` or a user Console
+  handler) is no longer discharged by that handler, which never sees the
+  task's operations: the program now needs the root grant (`--allow`, E0814 in
+  manifests, host preflight and Warp world grants). Previously such a program
+  checked as pure and its child's operation went to the root grant anyway, or
+  failed without it. Grant the effect or handle it inside the task. Printed
+  signatures are unchanged; diagnostics show such an effect as `name@task`.
+  A closed or rigid row written in the program that names the effect does not
+  admit `name@task`, so an annotation such as `() ->{Console} TaskResult ()`
+  on a function whose scope body prints is now a mismatch: leave the row open
+  or handle the effect inside the task. For the same reason a Warp `Prop` whose
+  body runs a task that samples is now refused (its row admits Dist, not
+  `dist@task`), while a `WCase` row admits the twins of the world effects it
+  lists. A handler written directly around such a task gets warning W0802.

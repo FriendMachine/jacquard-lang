@@ -104,12 +104,28 @@ and a signature that names one row variable for both, such as
 `(() ->{Async | e} a) ->{| e} TaskResult a` on a wrapper of `async.scope`. Give
 such a wrapper two row variables, as inferred signatures do.
 
-Not yet checked: an in-language handler of a root-grantable effect written
-around a task (for example `dist.enumerate`, or a user handler of Console)
-does not handle the task's operations, which go to the root grant at run time
-or fail if it is absent; such a program still checks. A user handler that
-interprets Async itself (the native parity seam) runs children inline, where
-an outer handler would reach them, but is refused like any other.
+An in-language handler of an effect a task may leave unhandled, written around
+the task (for example `dist.enumerate`, `console.scripted`, `clock.fixed` or a
+user handler of Console), does not handle the task's operations either: they
+go to the root grant at run time, or fail if it is absent. So such an effect
+does not reach the call's row as itself. Every effect the task leaves
+unhandled, except Async, reaches it as a separate label, its root twin
+`E@task`, which no handler discharges. The twin stays in the row up to the
+root, where it is charged as E: `--allow`, the manifest (E0814), host
+preflight and Warp's world grants read it as E. Printed signatures and
+interfaces show E (so they are unchanged); diagnostics show `name@task`. For
+example `console.scripted(fn () -> async.scope(fn () -> print("x")), Nil)`
+needs the console grant. A row written in the program stays exact: a closed or
+rigid row that names Console does not admit `console@task`, and the mismatch
+says so; a Warp `Case` or `Prop` row is closed the same way, while a `WCase`
+row admits the twins of the world effects it lists. A handler written directly
+around such a task is warned about (W0802); the warning is best-effort and does
+not see through a wrapper whose handler body is a parameter. Known limit: a
+handler that re-performs the effect it handles, such as `fs.read-only`, keeps
+the effect in the row anyway, so the charge cannot show that a child's write
+bypasses it. A user handler that interprets Async itself (the native parity
+seam) runs children inline, where an outer handler would reach them, but is
+refused like any other.
 
 The identity guard applies only to the resolved operation whose complete
 declaration is the exact four-operation interface above. The nominal HASH_V0

@@ -221,6 +221,42 @@ let contains haystack needle =
   let rec go i = i + n <= m && (String.sub haystack i n = needle || go (i + 1)) in
   go 0
 
+(* A divergent subtree inside a quote is rendered at its quote depth: a quoted handler keeps its
+   continuation's name, since lowering refuses [resume _] there (E1245). *)
+let test_quoted_fragment_keeps_resume_name () =
+  let form source =
+    match Reader.parse_one ~file:"quoted-fragment.jqd" source with
+    | Ok form -> form
+    | Error ds -> Eval_support.fail_diags "quoted fragment read" ds
+  in
+  let handler extra =
+    Printf.sprintf
+      "(handle (lit 1) (ret (pvar x) (var x)) (opclause halt ((pvar y)) unused-resume (var y))%s)"
+      extra
+  in
+  let extra = " (opclause stop () unused-resume (lit 0))" in
+  let rendered wrap =
+    match
+      Diff.form_divergences ~syntax:Diff.Surface ~path:""
+        (form (wrap (handler "")))
+        (form (wrap (handler extra)))
+    with
+    | [ { Diff.a; detail = Diff.Subtrees (depth, _, _); _ } ] -> (depth, a)
+    | _ -> Alcotest.fail "expected one subtree divergence"
+  in
+  let check label wrap expected_depth expected_resume =
+    let depth, text = rendered wrap in
+    Alcotest.(check int) (label ^ " depth") expected_depth depth;
+    Alcotest.(check bool)
+      (label ^ ": " ^ text)
+      true
+      (contains text ("halt(y) resume " ^ expected_resume ^ " ->"))
+  in
+  check "plain" Fun.id 0 "_";
+  check "quoted" (Printf.sprintf "(quote %s)") 1 "unused-resume";
+  check "live splice" (Printf.sprintf "(quote (unquote %s))") 0 "_";
+  check "nested splice" (Printf.sprintf "(quote (quote (unquote %s)))") 1 "unused-resume"
+
 let row_form effects =
   Form.form "row" (List.map (fun hash -> Form.F (Form.form "eref" [ Form.Hash hash ])) effects)
 
@@ -296,6 +332,8 @@ let suite =
       test_surface_mode_renders_kernel_nodes;
     Alcotest.test_case "store diff renders surface nodes" `Quick test_store_diff_surface_nodes;
     Alcotest.test_case "surface fragment rendering" `Quick test_surface_fragment_rendering;
+    Alcotest.test_case "quoted fragment keeps resume name" `Quick
+      test_quoted_fragment_keeps_resume_name;
     Alcotest.test_case "helper edit lists dependents" `Quick test_helper_edit_lists_dependents;
     Alcotest.test_case "added and removed" `Quick test_added_removed;
     Alcotest.test_case "authority row diff uses registry" `Quick

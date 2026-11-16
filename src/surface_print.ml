@@ -1811,9 +1811,13 @@ let fragment_error form =
 
 (** [print_fragment] renders a kernel form even when it is an interior pattern, type, row, or
     auxiliary product. It is intended for semantic diff and diagnostics; context-ambiguous [group]
-    forms return E1203 rather than guessing. *)
-let print_fragment ?(lookup : lookup option) ?(width = default_width) (form : Form.t) :
-    (string, Diag.t list) result =
+    forms return E1203 rather than guessing. [quote_depth] (default 0) is the number of [quote]s
+    enclosing [form] in its declaration minus the live [unquote]s between them, as surface lowering
+    counts it; a handler clause at a positive depth keeps its continuation's name rather than
+    printing [resume _], which lowering refuses there (E1245). *)
+let print_fragment ?(lookup : lookup option) ?(width = default_width) ?(quote_depth = 0)
+    (form : Form.t) : (string, Diag.t list) result =
+  let canonical_context = { canonical_context with quote_depth } in
   let rendered pp value =
     match render ~width pp value with
     | text -> Ok text

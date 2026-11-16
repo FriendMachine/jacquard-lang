@@ -1338,6 +1338,34 @@ let test_reloaded_wildcard_resume_printing () =
   check_printed "a live splice inside a quote prints as _"
     (Printf.sprintf "(quote (unquote %s))" (handler "(pvar y)" "unused-resume" "(var y)"))
     (Printf.sprintf "quote { unquote(handle 1 { | return x -> x | %s(y) resume _ -> y }) }" op);
+  (* a splice that only leaves the inner of two quotes is still quoted: depth 2 - 1 = 1 *)
+  check_printed "a splice inside a nested quote keeps its name"
+    (Printf.sprintf "(quote (quote (unquote %s)))" (handler "(pvar y)" "unused-resume" "(var y)"))
+    (Printf.sprintf
+       "quote { quote { unquote(handle 1 { | return x -> x | %s(y) resume unused-resume -> y }) } }"
+       op);
+  (* a diff fragment is printed at the quote depth where it was found *)
+  let clause =
+    match
+      Reader.parse_one ~file:"fragment.jqd"
+        (Printf.sprintf "(opclause %s ((pvar y)) unused-resume (var y))" bootstrap_op)
+    with
+    | Ok form -> form
+    | Error diagnostics -> fail_diags "fragment parse" diagnostics
+  in
+  let fragment ?quote_depth () =
+    match Surface_print.print_fragment ?quote_depth clause with
+    | Ok text -> flat text
+    | Error diagnostics -> fail_diags "print_fragment" diagnostics
+  in
+  Alcotest.(check string)
+    "an unquoted fragment prints as _"
+    (flat (Printf.sprintf "| %s(y) resume _ -> y" op))
+    (fragment ());
+  Alcotest.(check string)
+    "a quoted fragment keeps its name"
+    (flat (Printf.sprintf "| %s(y) resume unused-resume -> y" op))
+    (fragment ~quote_depth:1 ());
   (* the parameter-collision carrier: the lowered wildcard picks unused-resume-2, round-trips
      through the .jqd carrier, and hashes like its named twin *)
   let wildcard =

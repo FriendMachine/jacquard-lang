@@ -30,10 +30,11 @@ type authority_effect = { short : string; full : string }
     unblessed identity; [full] is {!Effect_registry.render_resolved}. *)
 
 (** What the readable report renders for a divergence. [Subtrees] are the two smallest enclosing
-    kernel forms (a differing scalar leaf is shown through its parent form); [Authority] the two
-    resolved rows; [Summary] reuses [a]/[b]. *)
+    kernel forms (a differing scalar leaf is shown through its parent form) with their quote depth
+    (enclosing [quote]s minus live [unquote]s, see {!Surface_print.print_fragment}); [Authority] the
+    two resolved rows; [Summary] reuses [a]/[b]. *)
 type detail =
-  | Subtrees of Form.t * Form.t
+  | Subtrees of int * Form.t * Form.t
   | Authority_rows of
       (authority_effect list * string option) * (authority_effect list * string option)
   | Summary
@@ -60,13 +61,14 @@ type report = (string * entry) list
 *)
 type render_syntax = Bootstrap | Surface
 
-(** [render_form syntax form] renders a complete kernel subtree in the selected notation. Surface
-    rendering falls back to bootstrap for auxiliary or arbitrary triple forms. *)
-let render_form syntax form =
+(** [render_form ~quote_depth syntax form] renders a complete kernel subtree, found at [quote_depth]
+    in its declaration, in the selected notation. Surface rendering falls back to bootstrap for
+    auxiliary or arbitrary triple forms. *)
+let render_form ?(quote_depth = 0) syntax form =
   match syntax with
   | Bootstrap -> Printer.inline_form form
   | Surface -> (
-      match Surface_print.print_fragment form with
+      match Surface_print.print_fragment ~quote_depth form with
       | Ok text when not (String.equal text "") -> text
       | Ok _ | Error _ -> Printer.inline_form form)
 
@@ -149,8 +151,8 @@ let child_region region head i (child : Form.t) =
 (** Internal traversal. Only the row child of a typed [tarrow] is authority. [raw_context] becomes
     true at a quote boundary and prevents even type-shaped quoted data from receiving authority
     semantics. *)
-let rec form_divergences_in ~syntax ~effect_name_of ~authority_context ~raw_context ~region ~path
-    (fa : Form.t) (fb : Form.t) : divergence list =
+let rec form_divergences_in ~syntax ~effect_name_of ~authority_context ~raw_context ~quote_depth
+    ~region ~path (fa : Form.t) (fb : Form.t) : divergence list =
   if Form.equal_ignoring_meta fa fb then []
   else if
     authority_context
@@ -205,10 +207,10 @@ let rec form_divergences_in ~syntax ~effect_name_of ~authority_context ~raw_cont
     [
       {
         path = Alloc_meter.rendered_piece path;
-        a = render_form syntax fa;
-        b = render_form syntax fb;
+        a = render_form ~quote_depth syntax fa;
+        b = render_form ~quote_depth syntax fb;
         region;
-        detail = Subtrees (fa, fb);
+        detail = Subtrees (quote_depth, fa, fb);
       };
     ]
   else
@@ -222,13 +224,19 @@ let rec form_divergences_in ~syntax ~effect_name_of ~authority_context ~raw_cont
                let child_raw_context =
                  raw_context || fa.Form.head = "quote" || fb.Form.head = "quote"
                in
+               let child_quote_depth =
+                 match fa.Form.head with
+                 | "quote" -> quote_depth + 1
+                 | "unquote" -> quote_depth - 1
+                 | _ -> quote_depth
+               in
                let child_authority_context =
                  (not child_raw_context) && fa.Form.head = "tarrow" && fb.Form.head = "tarrow"
                  && i = 1
                in
                form_divergences_in ~syntax ~effect_name_of
-                 ~authority_context:child_authority_context ~raw_context:child_raw_context ~region
-                 ~path ga gb
+                 ~authority_context:child_authority_context ~raw_context:child_raw_context
+                 ~quote_depth:child_quote_depth ~region ~path ga gb
            | a, b ->
                if Form.equal_arg a b then []
                else
@@ -244,7 +252,7 @@ let rec form_divergences_in ~syntax ~effect_name_of ~authority_context ~raw_cont
                      a = render a;
                      b = render b;
                      region;
-                     detail = Subtrees (fa, fb);
+                     detail = Subtrees (quote_depth, fa, fb);
                    };
                  ])
          (List.combine fa.Form.args fb.Form.args))
@@ -256,7 +264,7 @@ let rec form_divergences_in ~syntax ~effect_name_of ~authority_context ~raw_cont
     for identities absent from the registry. *)
 let form_divergences ?(syntax = Bootstrap) ?(effect_name_of = fun _ -> "unregistered") ~path fa fb =
   form_divergences_in ~syntax ~effect_name_of ~authority_context:false ~raw_context:false
-    ~region:Definition ~path fa fb
+    ~quote_depth:0 ~region:Definition ~path fa fb
 
 (* All ((name, kind), hash) bindings of a store, plus a way to fetch a decl's printed form.
    Keys carry the kind: a name bound to several kinds (an effect and its op, say) must be
@@ -499,8 +507,8 @@ let side_lookup side : Surface_print.lookup =
     [lookup], falling back to bootstrap notation. Unnamed references are abbreviated; in surface
     text only kind-tagged hashes (as the printer writes references) are, so an ordinary text literal
     holding a bare hash stays whole. *)
-let readable_form lookup form =
-  match Surface_print.print_fragment ~lookup form with
+let readable_form ?(quote_depth = 0) lookup form =
+  match Surface_print.print_fragment ~lookup ~quote_depth form with
   | Ok text when not (String.equal text "") ->
       rename_hashes
         (fun kind hex -> match kind with Some _ -> "#" ^ String.sub hex 0 12 | None -> "#" ^ hex)
@@ -530,9 +538,9 @@ let change_lines label old_text new_text =
 
 (** [identified_form lookup form] renders [form] with each reference as [name#<12 hex>] (or
     [#<12 hex>] when unnamed), for two sides that read the same by name but differ in identity. *)
-let identified_form (lookup : Surface_print.lookup) form =
+let identified_form ?(quote_depth = 0) (lookup : Surface_print.lookup) form =
   let text =
-    match Surface_print.print_fragment form with
+    match Surface_print.print_fragment ~quote_depth form with
     | Ok text when not (String.equal text "") -> text
     | Ok _ | Error _ -> Printer.inline_form form
   in
@@ -556,13 +564,14 @@ let identified_form (lookup : Surface_print.lookup) form =
 
 let divergence_lines ~old_lookup ~new_lookup { a; b; region; detail; _ } =
   match detail with
-  | Subtrees (fa, fb) ->
-      let old_text = readable_form old_lookup fa and new_text = readable_form new_lookup fb in
+  | Subtrees (quote_depth, fa, fb) ->
+      let old_text = readable_form ~quote_depth old_lookup fa
+      and new_text = readable_form ~quote_depth new_lookup fb in
       if not (String.equal old_text new_text) then
         change_lines (region_label region) old_text new_text
       else
-        let old_identified = identified_form old_lookup fa
-        and new_identified = identified_form new_lookup fb in
+        let old_identified = identified_form ~quote_depth old_lookup fa
+        and new_identified = identified_form ~quote_depth new_lookup fb in
         if not (String.equal old_identified new_identified) then
           change_lines (region_label region) old_identified new_identified
         else
@@ -615,7 +624,7 @@ let render_readable ~old_side ~new_side (r : report) : string option =
   let old_lookup = side_lookup old_side and new_lookup = side_lookup new_side in
   (* several differing scalars of one parent form carry that same parent: show it once *)
   let rec dedupe = function
-    | ({ detail = Subtrees (fa, fb); _ } as x) :: { detail = Subtrees (ga, gb); _ } :: rest
+    | ({ detail = Subtrees (_, fa, fb); _ } as x) :: { detail = Subtrees (_, ga, gb); _ } :: rest
       when fa == ga && fb == gb ->
         dedupe (x :: rest)
     | x :: rest -> x :: dedupe rest

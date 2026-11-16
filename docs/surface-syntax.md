@@ -522,10 +522,14 @@ declaration's identity matches its named twin. Quoted code is name-addressed
 data that a runtime splice can extend, where a generated name could capture a
 spliced reference, so a handler inside `quote` must name its continuation
 (E1245); a live `unquote` is ordinary code and may use `resume _`. The
-surface printer shows a reloaded continuation as `resume _` when it is exactly
-the spelling the encoding would pick for that clause (so nothing refers to it
-and printing it back re-encodes the same text), except inside a quote, where
-it keeps the name.
+surface printer shows a continuation as `resume _` when it is exactly the
+spelling the encoding would pick for that clause (so nothing refers to it and
+printing it back re-encodes the same text). It looks only at the spelling, so
+`jacquard fmt` also rewrites a hand-written, unreferenced `resume
+unused-resume` to `resume _`; the identity is unchanged. Inside a quote the
+clause keeps its name, while a clause inside a live `unquote` in a quote is
+ordinary code and prints `_`. Diff output prints a quoted fragment by the same
+rule.
 
 ## 5. The forms
 

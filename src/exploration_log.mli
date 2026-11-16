@@ -73,8 +73,9 @@ val serialize : log -> string
 
 val parse : string -> (log, string) result
 (** [parse bytes] accepts exactly canonical bytes ([serialize (parse bytes) = bytes]); another
-    format version, trailing or missing bytes, a wrong step count, and non-canonical numbers or
-    hashes are refused with a reason. *)
+    format version, trailing or missing bytes, a wrong step count, argument indices that are
+    repeated or not ascending, and non-canonical numbers or hashes (including uppercase hex) are
+    refused with a reason. Linear in the input. *)
 
 type reservation
 
@@ -82,9 +83,17 @@ val reserve : path:string -> (reservation, string) result
 (** [reserve ~path] creates [path] empty with mode 0600 and never replaces an existing file; a
     recording reserves its log before the run and writes through the reservation afterwards. *)
 
-val write_reserved : reservation -> string -> (unit, string) result
+val write_reserved :
+  ?write:(Unix.file_descr -> bytes -> int -> int -> int) ->
+  reservation ->
+  string ->
+  (unit, string) result
 (** [write_reserved r contents] writes and syncs [contents] through the reserved descriptor and
-    closes it. *)
+    closes it. When a write or the sync fails, the reserved file is emptied through the descriptor
+    and its path removed if it still names that file (a file substituted at the path is left alone),
+    so no partial log is left; the error says whether that cleanup succeeded. [write] is the
+    primitive each chunk is written with ([Unix.write] by default); tests replace it to make a write
+    fail part way. *)
 
 val release : reservation -> unit
 (** [release r] closes a reservation that will not be written (the empty file stays). *)

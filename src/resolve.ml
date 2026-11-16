@@ -1196,33 +1196,22 @@ let rec resolve_expr_in st ~group ~locals (e : Kernel.expr) : Kernel.expr =
              resolve_ty st ~locals ~tyself:None ~effectself:None ty ))
 
 (* Quoted code stays data; only LIVE (level-0) unquote splices resolve. Nested quotes raise
-   the quasiquote level; their unquotes are data until the inner quote itself evaluates. *)
-and resolve_quote_payload st ~group ~locals ?(level = 0) (f : Form.t) : Form.t =
-  if f.Form.head = "unquote" && level = 0 then
-    match f.Form.args with
-    | [ Form.F splice ] -> (
-        match Kernel.expr_of_form splice with
-        | Ok e ->
-            let resolved = resolve_expr_in st ~group ~locals e in
-            { f with Form.args = [ Form.F (Kernel.expr_to_form resolved) ] }
-        | Error ds ->
-            List.iter (report st) ds;
-            f)
-    | _ -> f (* shape already rejected by validation *)
-  else
-    let level =
-      match f.Form.head with "quote" -> level + 1 | "unquote" -> level - 1 | _ -> level
-    in
-    {
-      f with
-      Form.args =
-        List.map
-          (function
-            | Form.F g -> Form.F (resolve_quote_payload st ~group ~locals ~level g)
-            | Form.Real r -> Form.Real (normalize_real r)
-            | a -> a)
-          f.Form.args;
-    }
+   the quasiquote level; their unquotes are data until the inner quote itself evaluates. The
+   level rule is the one hashing and group renumbering share ([Kernel.walk_quoted]). *)
+and resolve_quote_payload st ~group ~locals (payload : Form.t) : Form.t =
+  Kernel.map_quoted payload
+    ~scalar:(function Form.Real r -> Form.Real (normalize_real r) | a -> a)
+    ~splice:(fun (f : Form.t) ->
+      match f.Form.args with
+      | [ Form.F splice ] -> (
+          match Kernel.expr_of_form splice with
+          | Ok e ->
+              let resolved = resolve_expr_in st ~group ~locals e in
+              { f with Form.args = [ Form.F (Kernel.expr_to_form resolved) ] }
+          | Error ds ->
+              List.iter (report st) ds;
+              f)
+      | _ -> f (* shape already rejected by validation *))
 
 let resolve_binding st ~group (b : Kernel.binding) : Kernel.binding =
   {

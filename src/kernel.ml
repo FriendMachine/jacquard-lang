@@ -224,6 +224,33 @@ let is_irrefutable (p : pat) =
   in
   go p
 
+(** [walk_quoted ~splice ~node payload] is the quasiquote-level traversal of a [Quote] payload that
+    hashing ([Canon.ser_quoted]), resolution ([Resolve.resolve_quote_payload]) and group renumbering
+    ([Store.remap_group_refs]) share, so the three cannot disagree on which splices are live. A LIVE
+    (level-0) [(unquote ...)] form is handed whole to [splice], whatever its arity; every other form
+    is data and is handed to [node] with a function that walks one of its child forms at the child's
+    level: under a [quote] form the level is one higher, under a data [unquote] one lower. [level]
+    is the level of [payload] itself (0 for the payload of a [Quote]). Never raises on its own. *)
+let rec walk_quoted ?(level = 0) ~splice ~node (f : Form.t) =
+  if String.equal f.Form.head "unquote" && level = 0 then splice f
+  else
+    let level =
+      match f.Form.head with "quote" -> level + 1 | "unquote" -> level - 1 | _ -> level
+    in
+    node f (fun g -> walk_quoted ~level ~splice ~node g)
+
+(** [map_quoted ~splice ~scalar payload] rebuilds [payload] by {!walk_quoted}: each live unquote
+    form is replaced by [splice] of it, each scalar argument of a data form by [scalar] of it
+    (default unchanged), and data forms keep their head and metadata. *)
+let map_quoted ?(scalar = Fun.id) ~splice (payload : Form.t) : Form.t =
+  walk_quoted ~splice
+    ~node:(fun f walk ->
+      {
+        f with
+        Form.args = List.map (function Form.F g -> Form.F (walk g) | a -> scalar a) f.Form.args;
+      })
+    payload
+
 let surface_ref_head = "surface-ref-v0"
 
 let decode_surface_ref (f : Form.t) =

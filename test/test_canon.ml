@@ -505,6 +505,37 @@ let test_quoted_surface_marker_validation () =
     "valid marker metadata remains inert" true
     (Hash.equal actual (hash "valid with metadata" valid_with_meta))
 
+(* The quasiquote-level rule hashing shares with resolution and group renumbering
+   ([Kernel.walk_quoted]) keeps HASH_V0 byte-identical: these declarations, with live, nested and
+   data unquotes and a group whose splices reference each other, hash exactly as before the rule
+   was shared (pinned from the earlier per-module traversal). *)
+let test_quasiquote_hashes_pinned () =
+  let source =
+    String.concat "\n"
+      [
+        {|(defterm ((binding qq-live () (lam ((pvar x)) (quote (data (unquote (var x)) (lit 2.5) "t" sym 7))))))|};
+        {|(defterm ((binding qq-nested () (lam ((pvar x)) (quote (quote (unquote (unquote (var x)))))))))|};
+        {|(defterm ((binding qq-inner-data () (lam ((pvar x)) (quote (quote (unquote (var x))))))))|};
+        {|(defterm ((binding qq-deep () (lam ((pvar x) (pvar y)) (quote (k (quote (j (unquote (unquote (tuple (var x) (quote (z (unquote (var y)) (quote (unquote w))))))))) 2.5))))))|};
+        {|(defterm ((binding qq-ping () (lam ((pvar n)) (quote (quote (unquote (unquote (app (var qq-pong) (var n)))))))) (binding qq-pong () (lam ((pvar n)) (quote (unquote (app (var qq-ping) (var n))))))))|};
+      ]
+  in
+  let actual =
+    List.map
+      (fun t -> Hash.to_hex (hash_of_top ~what:"quasiquote" t).Canon.decl_hash)
+      (resolved_tops ~what:"quasiquote" source)
+  in
+  Alcotest.(check (list string))
+    "quasiquote declaration hashes are unchanged"
+    [
+      "b9c007bd49708000fd6e1507bf999fe1183db071d00f9e278fd4ef313c05c65a";
+      "1fac5686d91f62e7b7104b036f0e76e87252a0bfe14a1b5c7d32d297a3e2102c";
+      "f7aca2367f5c8f2122c22fc20cfe7931ca1ffcd3678582ce14cbde6a264ae56c";
+      "7cb71032c5b4255a3da27f1395ebed1f796fb6b43a73bc6569b39959be96a444";
+      "7c62ff533cadcf021467c3bf2038325ccc1b20ac5141b029dfc54cc916bf0726";
+    ]
+    actual
+
 let suite =
   [
     Alcotest.test_case "golden corpus hashes" `Quick test_golden_corpus_hashes;
@@ -523,4 +554,5 @@ let suite =
     Alcotest.test_case "unresolved trees rejected" `Quick test_unresolved_rejected;
     Alcotest.test_case "quoted surface marker validation" `Quick
       test_quoted_surface_marker_validation;
+    Alcotest.test_case "quasiquote hashes pinned" `Quick test_quasiquote_hashes_pinned;
   ]

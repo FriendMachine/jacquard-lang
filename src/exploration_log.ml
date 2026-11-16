@@ -136,12 +136,12 @@ let projected_arguments t (rule : Observation_policy.rule) values =
   | Observation_policy.No_arguments -> []
   | Observation_policy.All_arguments -> List.mapi (fun i v -> (i, field v)) (Lazy.force values)
   | Observation_policy.Selected_arguments positions ->
-      let values = Lazy.force values in
+      (* an array keeps the lookup of each selected position constant time *)
+      let values = Array.of_list (Lazy.force values) in
       List.map
         (fun i ->
-          match List.nth_opt values i with
-          | Some v -> (i, field v)
-          | None -> (i, Observation_transcript.Missing))
+          if i >= 0 && i < Array.length values then (i, field values.(i))
+          else (i, Observation_transcript.Missing))
         positions
 
 let same h = function Some h' -> Hash.equal h h' | None -> false
@@ -462,11 +462,12 @@ let parse bytes =
       | [ h; "record-output=no" ] -> (hash_of h, false)
       | _ -> fail "bad policy line"
     in
-    let rec steps acc =
+    (* [count] is the number of steps read so far, so checking each index is constant time *)
+    let rec steps count acc =
       match peek () with
       | Some l when String.starts_with ~prefix:"step " l ->
           let l = line () in
-          let index, kind, operation, count =
+          let index, kind, operation, arguments =
             match String.split_on_char ' ' l with
             | [ "step"; i; k; o; a ] ->
                 ( int_of (after "index=" i),
@@ -481,7 +482,7 @@ let parse bytes =
                   | c -> fail "bad argument count %d" c )
             | _ -> fail "bad step line %S" l
           in
-          if index <> List.length acc then fail "step %d out of order" index;
+          if index <> count then fail "step %d out of order" index;
           let name = framed_after "name" in
           let site =
             match peek () with
@@ -503,18 +504,24 @@ let parse bytes =
                 Some (framed_after (Printf.sprintf "choice-name draw=%d" k), k)
             | _ -> None
           in
+          (* argument positions are strictly ascending, as a recording writes them (OBS.1
+             selections are ascending, and all-arguments numbers them in order) *)
+          let previous = ref (-1) in
           let arguments =
-            List.init count (fun _ ->
+            List.init arguments (fun _ ->
                 match peek () with
                 | Some l when String.starts_with ~prefix:"argument index=" l ->
                     let i =
                       match String.split_on_char ' ' l with
                       | _ :: idx :: _ -> (
                           match int_of (after "index=" idx) with
-                          | i when i >= 0 -> i
-                          | i -> fail "bad argument index %d" i)
+                          | i when i < 0 -> fail "bad argument index %d" i
+                          | i when i <= !previous ->
+                              fail "argument index %d is repeated or not ascending" i
+                          | i -> i)
                       | _ -> fail "bad argument line"
                     in
+                    previous := i;
                     (i, field_after (Printf.sprintf "argument index=%d" i))
                 | _ -> fail "missing argument")
           in
@@ -528,7 +535,7 @@ let parse bytes =
             | Some l when String.starts_with ~prefix:"output " l -> Some (field_after "output")
             | _ -> None
           in
-          steps
+          steps (count + 1)
             ({
                e_index = index;
                e_kind = kind;
@@ -543,7 +550,7 @@ let parse bytes =
             :: acc)
       | _ -> List.rev acc
     in
-    let entries = steps [] in
+    let entries = steps 0 [] in
     let ending =
       match String.split_on_char ' ' (line ()) with
       | [ "end"; s; e ] -> (
@@ -566,28 +573,46 @@ let parse bytes =
 (* the log path is reserved before the run (created empty, exclusively, owner-only) and the
    recording writes through that same descriptor afterwards, so nothing at the path can be
    substituted in between *)
-type reservation = Unix.file_descr
+type reservation = { fd : Unix.file_descr; path : string }
 
 let reserve ~path =
   match Unix.openfile path [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_EXCL; Unix.O_CLOEXEC ] 0o600 with
   | exception Unix.Unix_error (Unix.EEXIST, _, _) -> Error (path ^ " already exists")
   | exception Unix.Unix_error (error, _, _) -> Error (path ^ ": " ^ Unix.error_message error)
-  | fd -> Ok fd
+  | fd -> Ok { fd; path }
 
-let write_reserved fd contents =
+(* a failed write leaves no partial log: the reserved file is emptied through its descriptor, and
+   the path is removed only while it still names that same file (never something substituted for
+   it). [true] when no recorded byte is left, at the path or in the reserved file. *)
+let discard { fd; path } =
+  let emptied =
+    match Unix.ftruncate fd 0 with () -> true | exception Unix.Unix_error _ -> false
+  in
+  match (Unix.fstat fd, Unix.lstat path) with
+  | mine, theirs when mine.Unix.st_dev = theirs.Unix.st_dev && mine.Unix.st_ino = theirs.Unix.st_ino
+    -> (
+      match Unix.unlink path with () -> true | exception Unix.Unix_error _ -> emptied)
+  | _ -> emptied (* the path names something else now; that is not ours to remove *)
+  | exception Unix.Unix_error _ -> emptied
+
+let write_reserved ?(write = Unix.write) ({ fd; _ } as reservation) contents =
   Fun.protect
     ~finally:(fun () -> try Unix.close fd with Unix.Unix_error _ -> ())
     (fun () ->
       let bytes = Bytes.unsafe_of_string contents in
       let rec go off =
-        if off < Bytes.length bytes then
-          go (off + Unix.write fd bytes off (Bytes.length bytes - off))
+        if off < Bytes.length bytes then go (off + write fd bytes off (Bytes.length bytes - off))
       in
       match
         go 0;
         Unix.fsync fd
       with
       | () -> Ok ()
-      | exception Unix.Unix_error (error, _, _) -> Error (Unix.error_message error))
+      | exception Unix.Unix_error (error, _, _) ->
+          let cleaned =
+            if discard reservation then "no partial log was left"
+            else "a partial log may remain at " ^ reservation.path
+          in
+          Error (Unix.error_message error ^ "; " ^ cleaned))
 
-let release fd = try Unix.close fd with Unix.Unix_error _ -> ()
+let release { fd; _ } = try Unix.close fd with Unix.Unix_error _ -> ()

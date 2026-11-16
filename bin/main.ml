@@ -530,12 +530,17 @@ and record_run ?alloc ~ceilings ~prelude ~store_dir ~session ~source file allows
             when Option.is_some store_dir
                  && List.exists (fun d -> Diag.code_or_uncoded d = "E0301") ds ->
               (* the policy is validated against the source checked on its own, which cannot see
-                 definitions a --store already holds *)
+                 definitions a --store already holds. The unknown names may be such definitions or
+                 plain mistakes, and the policy itself was never examined, so the diagnostic claims
+                 neither. *)
               Error
                 (cli_diagnostic ~code:"E1005"
-                   "a --record-policy is validated against the source checked on its own, and this \
-                    source does not check without its --store; record it with the default policy \
-                    or make the source self-contained"
+                   ~hint:
+                     "Record with the default policy (omit --record-policy), or make the source \
+                      define what it uses; correct any name below that is a mistake."
+                   "the --record-policy could not be checked: a policy is checked against the \
+                    source on its own, without the definitions --store holds, and on its own this \
+                    source has unknown names (below)"
                 :: ds)
           | Error ds -> Error ds)
       | other -> other

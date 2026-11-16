@@ -358,7 +358,25 @@ and ser_row buf env ({ Kernel.effects; rvar; wmeta } : Kernel.row) =
    locals captured by a splice stay alpha-invariant. Nested quotes raise the quasiquote
    level; their unquotes serialize as plain data forms. Reserved surface-reference markers
    remain data but must satisfy the Kernel marker contract at every depth. *)
-and ser_quoted buf env ?(level = 0) (f : Form.t) =
+and ser_quoted buf env (payload : Form.t) =
+  (* the shared quasiquote-level rule ([Kernel.walk_quoted]) decides which splices are live *)
+  Kernel.walk_quoted payload
+    ~splice:(fun (f : Form.t) ->
+      tag buf 0x51;
+      match f.Form.args with
+      | [ Form.F splice ] -> (
+          match Kernel.expr_of_form splice with
+          | Ok e -> ser_expr buf env e
+          | Error (diagnostic :: _) -> raise (Err diagnostic)
+          | Error [] ->
+              err ~meta:splice.Form.meta ~code:"E0504"
+                "kernel splice validation failed without a diagnostic")
+      | _ -> err ~meta:f.Form.meta ~code:"E0504" "malformed unquote reached hashing")
+    ~node:(fun f walk -> ser_quoted_data buf f walk)
+
+(* a data form of a quoted payload: its head and arguments, child forms walked at their level;
+   a reserved surface-reference marker must satisfy the Kernel marker contract *)
+and ser_quoted_data buf (f : Form.t) walk =
   if String.equal f.Form.head Kernel.surface_ref_head then
     begin match Kernel.expr_of_form f with
     | Ok _ -> ()
@@ -366,45 +384,28 @@ and ser_quoted buf env ?(level = 0) (f : Form.t) =
     | Error [] ->
         err ~meta:f.Form.meta ~code:"E0201" "kernel marker validation failed without a diagnostic"
     end;
-  if f.Form.head = "unquote" && level = 0 then begin
-    tag buf 0x51;
-    match f.Form.args with
-    | [ Form.F splice ] -> (
-        match Kernel.expr_of_form splice with
-        | Ok e -> ser_expr buf env e
-        | Error (diagnostic :: _) -> raise (Err diagnostic)
-        | Error [] ->
-            err ~meta:splice.Form.meta ~code:"E0504"
-              "kernel splice validation failed without a diagnostic")
-    | _ -> err ~meta:f.Form.meta ~code:"E0504" "malformed unquote reached hashing"
-  end
-  else begin
-    let level =
-      match f.Form.head with "quote" -> level + 1 | "unquote" -> level - 1 | _ -> level
-    in
-    tag buf 0x50;
-    text buf f.Form.head;
-    varint buf (List.length f.Form.args);
-    List.iter
-      (function
-        | Form.F g -> ser_quoted buf env ~level g
-        | Form.Int i ->
-            tag buf 0x52;
-            int64be buf (Int64.of_int i)
-        | Form.Real r ->
-            tag buf 0x53;
-            int64be buf (real_bits r)
-        | Form.Text s ->
-            tag buf 0x54;
-            text buf s
-        | Form.Sym s ->
-            tag buf 0x55;
-            text buf s
-        | Form.Hash h ->
-            tag buf 0x56;
-            hash_bytes buf h)
-      f.Form.args
-  end
+  tag buf 0x50;
+  text buf f.Form.head;
+  varint buf (List.length f.Form.args);
+  List.iter
+    (function
+      | Form.F g -> walk g
+      | Form.Int i ->
+          tag buf 0x52;
+          int64be buf (Int64.of_int i)
+      | Form.Real r ->
+          tag buf 0x53;
+          int64be buf (real_bits r)
+      | Form.Text s ->
+          tag buf 0x54;
+          text buf s
+      | Form.Sym s ->
+          tag buf 0x55;
+          text buf s
+      | Form.Hash h ->
+          tag buf 0x56;
+          hash_bytes buf h)
+    f.Form.args
 
 let ser_binding buf env ({ Kernel.annot; value; _ } : Kernel.binding) =
   tag buf 0x43;

@@ -435,11 +435,12 @@ let add_call_abis t companions =
       write_names t;
       Ok ()
 
-(* [remap_group_refs f e] renumbers every [GroupRef i] in [e] to [GroupRef (f i)]. Quoted payloads
-   are data, except LIVE (level-0) unquote splices, which are expressions in the enclosing group
-   (the quasiquote-level rule of [Canon.ser_quoted] and [Resolve.resolve_quote_payload]). *)
-let rec remap_group_refs f (e : Kernel.expr) : Kernel.expr =
-  let r = remap_group_refs f in
+(* raised by [remap_expr] for a live splice that is not a kernel expression or a group reference
+   the renumbering does not cover; caught only by [remap_group_refs], never escapes *)
+exception Not_renumberable
+
+let rec remap_expr f (e : Kernel.expr) : Kernel.expr =
+  let r = remap_expr f in
   let it : Kernel.expr_node =
     match e.Kernel.it with
     | Kernel.GroupRef i -> Kernel.GroupRef (f i)
@@ -465,58 +466,88 @@ let rec remap_group_refs f (e : Kernel.expr) : Kernel.expr =
   in
   { e with Kernel.it }
 
-and remap_quoted f ?(level = 0) (form : Form.t) : Form.t =
-  if form.Form.head = "unquote" && level = 0 then
-    match form.Form.args with
-    | [ Form.F splice ] -> (
-        match Kernel.expr_of_form splice with
-        | Ok e -> { form with Form.args = [ Form.F (Kernel.expr_to_form (remap_group_refs f e)) ] }
-        | Error _ -> form (* validation already rejected it; the rehash guard keeps it unserved *))
-    | _ -> form
-  else
-    let level =
-      match form.Form.head with "quote" -> level + 1 | "unquote" -> level - 1 | _ -> level
-    in
-    {
-      form with
-      Form.args =
-        List.map (function Form.F g -> Form.F (remap_quoted f ~level g) | a -> a) form.Form.args;
-    }
+and remap_quoted f (payload : Form.t) : Form.t =
+  Kernel.map_quoted payload ~splice:(fun (form : Form.t) ->
+      match form.Form.args with
+      | [ Form.F splice ] -> (
+          match Kernel.expr_of_form splice with
+          | Ok e -> { form with Form.args = [ Form.F (Kernel.expr_to_form (remap_expr f e)) ] }
+          | Error _ -> raise Not_renumberable)
+      | _ -> raise Not_renumberable)
 
-(* [in_persisted_order decl ~incoming ~persisted] is the source declaration with its members in
-   the persisted object's order (group references renumbered to match), so the overlay serves
-   source spans while member positions stay those of the object. [None] when the member hashes
-   are not a permutation of each other. *)
+(** [remap_group_refs f e] renumbers every [GroupRef i] in [e] to [GroupRef (f i)]. Quoted payloads
+    are data, except LIVE (level-0) unquote splices, which are expressions in the enclosing group
+    ([Kernel.walk_quoted], the level rule hashing and resolution share). [f] returns [None] for an
+    index it does not cover. [None] when a live splice is not a single kernel expression (validation
+    refuses such a splice before any store sees it) or [f] does not cover a reference: there is then
+    no renumbered expression, rather than one with a reference left unrenumbered. *)
+let remap_group_refs f (e : Kernel.expr) : Kernel.expr option =
+  let f i = match f i with Some j -> j | None -> raise Not_renumberable in
+  match remap_expr f e with remapped -> Some remapped | exception Not_renumberable -> None
+
+(** [in_persisted_order decl ~incoming ~persisted] is the source declaration with its members in the
+    persisted object's order (group references renumbered to match), so the overlay serves source
+    spans while member positions stay those of the object. [incoming] and [persisted] are the member
+    hashes of [decl] and of the persisted object, as [Canon.hash_decl] gives them.
+
+    Member hashes within one group are distinct by construction: each is HASH_V0 of the group hash
+    and the member's canonical index, and the canonical indices are a permutation. The function
+    still checks it rather than assuming it: [None] when either list repeats a hash, when they are
+    not a permutation of each other, when [decl] is not a [DefTerm] group of that size, or when a
+    group reference cannot be renumbered; [decl] itself when the orders already agree. Linear in the
+    group size and the declaration. The caller serves the result only after rehashing it to the
+    persisted object. *)
 let in_persisted_order (decl : Kernel.decl) ~incoming ~persisted : Kernel.decl option =
-  if List.equal Hash.equal incoming persisted then Some decl
+  (* member hash -> incoming index; a repeated hash makes the order ambiguous *)
+  let position = Hashtbl.create 8 in
+  let distinct =
+    List.for_all
+      (fun (i, h) ->
+        let key = Hash.to_hex h in
+        (not (Hashtbl.mem position key))
+        && begin
+          Hashtbl.replace position key i;
+          true
+        end)
+      (List.mapi (fun i h -> (i, h)) incoming)
+  in
+  if not distinct then None
+  else if List.equal Hash.equal incoming persisted then Some decl
   else
     match decl.Kernel.it with
-    | Kernel.DefTerm bindings when List.length bindings = List.length persisted -> (
-        let incoming = Array.of_list incoming and bindings = Array.of_list bindings in
-        let index_of h =
-          let rec go i =
-            if i >= Array.length incoming then None
-            else if Hash.equal incoming.(i) h then Some i
-            else go (i + 1)
-          in
-          go 0
+    | Kernel.DefTerm bindings
+      when List.compare_lengths bindings incoming = 0 && List.compare_lengths bindings persisted = 0
+      ->
+        let n = List.length bindings in
+        (* old (incoming) index -> new (persisted) index, each filled exactly once, so a repeated
+           persisted hash is refused too *)
+        let target = Array.make n (-1) in
+        let sources =
+          List.mapi
+            (fun j h ->
+              match Hashtbl.find_opt position (Hash.to_hex h) with
+              | Some i when target.(i) < 0 ->
+                  target.(i) <- j;
+                  Some i
+              | Some _ | None -> None)
+            persisted
         in
-        match List.map index_of persisted with
-        | sources when List.for_all Option.is_some sources ->
-            let sources = Array.of_list (List.map Option.get sources) in
-            (* old (incoming) index -> new (persisted) index *)
-            let target = Array.make (Array.length sources) 0 in
-            Array.iteri (fun j i -> target.(i) <- j) sources;
-            let reordered =
-              Array.to_list
-                (Array.map
-                   (fun i ->
-                     let b = bindings.(i) in
-                     { b with Kernel.value = remap_group_refs (fun k -> target.(k)) b.Kernel.value })
-                   sources)
-            in
-            Some { decl with Kernel.it = Kernel.DefTerm reordered }
-        | _ -> None)
+        if not (List.for_all Option.is_some sources) then None
+        else
+          let bindings = Array.of_list bindings in
+          let renumber k = if k >= 0 && k < n then Some target.(k) else None in
+          let reordered =
+            List.map
+              (fun source ->
+                let b = bindings.(Option.get source) in
+                Option.map
+                  (fun value -> { b with Kernel.value })
+                  (remap_group_refs renumber b.Kernel.value))
+              sources
+          in
+          if List.for_all Option.is_some reordered then
+            Some { decl with Kernel.it = Kernel.DefTerm (List.map Option.get reordered) }
+          else None
     | _ -> None
 
 (** [put_decl t decl] canonicalizes, hashes, and stores a resolved declaration, then binds every

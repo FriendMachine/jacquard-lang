@@ -45,7 +45,8 @@ type status =
 type evaluated = { name : string; key : Hash.t; status : status; outcome : outcome option }
 
 type history_failure = {
-  reason : string;  (** why the history was not extended, for the W1802 cause *)
+  reason : string;
+      (** what failed, for the warning's cause (W1802, or W1801 for a cache directory) *)
   next_step : string option;  (** what the user can do, when it is not the default advice *)
 }
 
@@ -68,17 +69,20 @@ val evaluate :
     by default, the HASH_V0 of the image this process is running (read through [/proc/self/exe], so
     replacing or removing the file at the executable's path while it runs changes nothing) and the
     Core version, so an outcome stored by another build is never served; where that image cannot be
-    read (no [/proc/self/exe], or an unreadable executable) nothing is served or stored
+    read (no [/proc/self/exe], or an unreadable executable), or is the dynamic loader's (a build
+    started as [ld.so ./jacquard]; see {!loader_image}), nothing is served or stored
     ([Uncacheable "no-build-identity"]). The identity covers the executable file only, not shared
-    libraries it loads. The [outcomes] and [outcomes/BUILD] directories are checked before anything
-    is read: when either is not a directory (a symbolic link, say), nothing is served from or stored
-    in it, and each write is W1801. A stored outcome whose record matches is served; a corrupt or
-    foreign file, or a symbolic link, is ignored with W1800 and replaced; a failed write is W1801
-    and leaves the result [Uncacheable "write-failed"]. Files are created owner-only and written
-    atomically, and the cache's [outcomes] directories are made owner-only when they are ours and
-    are not. [record] is called for every result that has an outcome when [cache] is present and
-    [allows] is empty, with its status and outcome tag; its failure is W1802 (with the failure's
-    next step when it names one), and a note it returns is W1803. *)
+    libraries it loads. The [outcomes] and [outcomes/BUILD] directories are checked once per call,
+    before anything is read: when either is not a directory (a symbolic link, say), nothing is
+    served from or stored in it, and each write is W1801, whose next step says to make it a
+    directory of its own. An outcome path that is a directory is not W1800; its write is W1801,
+    saying to remove it. A stored outcome whose record matches is served; a corrupt or foreign file,
+    or a symbolic link, is ignored with W1800 and replaced; a failed write is W1801 and leaves the
+    result [Uncacheable "write-failed"]. Files are created owner-only and written atomically, and
+    the cache's [outcomes] directories are made owner-only when they are ours and are not. [record]
+    is called for every result that has an outcome when [cache] is present and [allows] is empty,
+    with its status and outcome tag; its failure is W1802 (with the failure's next step when it
+    names one), and a note it returns is W1803. *)
 
 val read_private :
   limit:int -> string -> (string, [ `Absent | `Too_large of int | `Unreadable of string ]) result
@@ -86,13 +90,16 @@ val read_private :
     symbolic link is [`Unreadable], and so is a file replaced between the check and the open) of at
     most [limit] bytes. Never blocks on a FIFO. *)
 
-val private_dirs : root:string -> string list -> (unit, string) result
+val private_dirs : root:string -> string list -> (unit, history_failure) result
 (** [private_dirs ~root parts] creates [root] when absent (mode 0700) and each directory [root/p1],
     [root/p1/p2], ... named by [parts]: a missing one is created 0700, and an existing one owned by
     the current user that others can reach is made 0700. [root] itself is never changed, since it
     may be a directory the user named. A path that is not a directory (a symbolic link, say) is an
-    error, and so is one replaced between the check and the change of its mode (the mode is changed
-    through the directory opened, never through a link). *)
+    error whose next step says to make it a directory of its own, and so is one replaced between the
+    check and the change of its mode. The mode is changed through the directory opened and found to
+    be the one checked; one the owner cannot read (which cannot be opened) has its mode changed by
+    path between two checks that it is the same directory, so only a link swapped in within that
+    window is followed, and it is then refused. Each directory is checked once per process. *)
 
 val check_dirs : root:string -> string list -> (unit, string) result
 (** [check_dirs ~root parts] checks, without creating or changing anything, that each existing
@@ -100,6 +107,11 @@ val check_dirs : root:string -> string list -> (unit, string) result
     symbolic link or another kind of file; a missing one ends the check successfully (what lies
     below it is absent). [root] itself is not checked. The check is by path: it is not atomic with a
     later open. *)
+
+val loader_image : string -> bool
+(** [loader_image path] holds when [path]'s base name is that of a dynamic loader ([ld-*], [ld.*],
+    [ld64.*], as [ld-linux-x86-64.so.2] or [ld-musl-x86_64.so.1]): a running image named so has no
+    build identity. Detection is by name only. *)
 
 val make_dirs : string -> unit
 (** [make_dirs dir] creates [dir] and its missing parents with mode 0700. *)

@@ -245,17 +245,31 @@ reader accepts only canonical bytes holding a cacheable outcome.
   at the executable's path while it runs changes nothing), and the Core
   version, so an outcome is only served to the build that stored it. The
   identity covers the executable file, not shared libraries it loads. Where
-  that image cannot be read (a system without `/proc/self/exe`, or an
-  executable without read permission), nothing is served or stored
-  (`uncacheable (no-build-identity)`). The `outcomes` and `outcomes/<build>`
-  directories are checked before anything is read: when either is not a
-  directory of its own (a symbolic link, or a file), nothing is served from or
-  stored in it, and each result's write is W1801. A file whose record differs
+  that image cannot be read (a system without `/proc/self/exe`, such as macOS,
+  where the outcome cache is therefore always off while history and `explain`
+  still work, or an executable without read permission), nothing is served or
+  stored (`uncacheable (no-build-identity)`). A program started through the
+  dynamic loader (`ld.so ./jacquard`) is running the loader's image, so an
+  image whose name is a loader's (`ld-*`, `ld.*`, `ld64.*`) has no build
+  identity either; detection is by name only. The `outcomes` and
+  `outcomes/<build>` directories are checked before anything is read: when
+  either is not a directory of its own (a symbolic link, or a file), nothing is
+  served from or stored in it, and each result's write is W1801, whose next
+  step says to make it a directory of its own. A file whose record differs
   from the result's, that does not parse, or that is a symbolic link is
-  ignored with W1800 and replaced; a failed write is W1801 and leaves the
-  result uncacheable. Below the cache directory, neither a cache file nor a
-  cache directory is read through a symbolic link (the cache directory itself
-  may be one); the checks are by path, made just before each open.
+  ignored with W1800 and replaced; an outcome path that is a directory is not
+  W1800, and its write is W1801 saying to remove the directory; any other
+  failed write is W1801. Each leaves the result uncacheable. Below the cache
+  directory, neither a cache file nor a cache directory is read through a
+  symbolic link (the cache directory itself may be one). The directory checks
+  are by path and are not atomic with later opens: `outcomes` and
+  `outcomes/<build>` are checked once per evaluation, before any outcome is
+  read or written; `history`, `history/<doc>` and `snapshots` once per process,
+  before the first record is written, and again before each snapshot read and
+  each history read by `explain`. A link swapped in for one of these
+  directories after its check (which needs write access to the cache tree) can
+  be followed by a later open in the same process. Each cache file is checked
+  just before it is opened, and the file opened must be the one checked.
 - Each result is printed as `NAME: fresh|cached|uncacheable (REASON)|refused`
   with its outcome. Reasons are `fuel`, `result-excluded` (the policy ignores
   the result), the opaque kind of an unsupported field (`closure`, `secret`,
@@ -360,9 +374,11 @@ guessed. Host 13 consumes `--json` of both commands.
   (`format=N`) and says to evaluate with the Jacquard version that wrote it or
   to move the file aside; `explain` says the same. A history, lock or snapshot
   path that is a symbolic link is refused, never followed; a missing history or
-  lock is created exclusively, and the file opened must be the one checked. A
-  `history`, `history/<doc>` or `snapshots` directory that is a symbolic link
-  refuses the record (W1802); `explain` reads no history through such a
+  lock is created exclusively (when another evaluation creates it first, it is
+  checked again and opened as an existing file), and the file opened must be
+  the one checked. A `history`, `history/<doc>` or `snapshots` directory that
+  is a symbolic link refuses the record (W1802, whose next step says to make it
+  a directory of its own); `explain` reads no history through such a
   history directory (the history is unavailable) and no snapshot through such
   a `snapshots` directory (the snapshot counts as gone), and creates nothing.
 - `snapshots/<hex>` holds each assumption's source text, each inline literal,

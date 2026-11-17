@@ -287,15 +287,24 @@ let same_file fd path =
 
 (* open the regular file at [path], creating it owner-only when absent: an absent file is created
    exclusively (so a link swapped in is never followed to create its target), an existing one is
-   opened without creating, and either way the file opened must still be the one at [path] *)
-let open_regular path flags =
+   opened without creating, and either way the file opened must still be the one at [path]. When
+   another process creates the file between the check and the exclusive create (two first
+   evaluations at once), the file is checked again, once, and opened as an existing one. *)
+let open_regular ?(before_create = ignore) path flags =
   let flags = Unix.O_CLOEXEC :: Unix.O_NONBLOCK :: flags in
-  let opened =
+  let existing () =
     match Unix.lstat path with
     | { Unix.st_kind = Unix.S_REG; _ } -> Ok (Unix.openfile path flags 0)
     | _ -> Error (path ^ ": not a regular file")
-    | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
-        Ok (Unix.openfile path (Unix.O_CREAT :: Unix.O_EXCL :: flags) 0o600)
+  in
+  let opened =
+    match existing () with
+    | r -> r
+    | exception Unix.Unix_error (Unix.ENOENT, _, _) -> (
+        before_create ();
+        match Unix.openfile path (Unix.O_CREAT :: Unix.O_EXCL :: flags) 0o600 with
+        | fd -> Ok fd
+        | exception Unix.Unix_error (Unix.EEXIST, _, _) -> existing ())
   in
   Result.bind opened (fun fd ->
       if same_file fd path then Ok fd
@@ -494,8 +503,8 @@ let oversized ~(store : Store.t) text =
 let append ~cache ~document (prepared : Model_doc.prepared) (r : Model_doc.resolved) ~outcome =
   let name = r.Model_doc.decl.Model_doc.r_name in
   let path = history_path ~cache ~document name in
-  let* () = plain (Model_eval.private_dirs ~root:cache [ "history"; hex document ]) in
-  let* () = plain (Model_eval.private_dirs ~root:cache [ "snapshots" ]) in
+  let* () = Model_eval.private_dirs ~root:cache [ "history"; hex document ] in
+  let* () = Model_eval.private_dirs ~root:cache [ "snapshots" ] in
   with_lock path @@ fun () ->
   let key = Model_doc.key r.Model_doc.dependency in
   (* a damaged history keeps every record before the damage; an unreadable one, one too large to
@@ -801,7 +810,8 @@ let differences ~store old_ now_ =
         let ot = table o and nt = table n in
         (* every declaration retained in a side's manifest that the current store no longer
            holds, parsed once and only when a body diff needs it; one the store holds is named by
-           the store, as [jacquard diff] names it *)
+           the store under its current name (so a declaration renamed since, but still stored,
+           shows its new name on the old side, where [jacquard diff] shows the old one) *)
         let retained side m =
           lazy
             (let seen = Hashtbl.create 16 in

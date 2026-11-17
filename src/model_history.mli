@@ -72,6 +72,15 @@ val append :
     names that format as [format=N], and the next step says to evaluate with the Jacquard version
     that wrote it or to move the file aside), or a write failed. *)
 
+val open_regular :
+  ?before_create:(unit -> unit) -> string -> Unix.open_flag list -> (Unix.file_descr, string) result
+(** [open_regular path flags] opens the regular file at [path] with [flags] (plus close-on-exec and
+    non-blocking, so a FIFO never blocks), creating it owner-only when absent. A symbolic link (live
+    or dangling), a FIFO, a directory or any other kind of file is refused, never followed or
+    created through; an absent file is created exclusively, and the file opened must still be the
+    one at [path]. [before_create] runs between finding the file absent and creating it (a test
+    seam). May raise [Unix.Unix_error]. *)
+
 val closure : store:Store.t -> Hash.t -> string * (Hash.t * string) list
 (** [closure ~store term] is the closure manifest of [term] (see {!record.entry_closure}) and the
     stored bytes of every declaration it lists, each with its HASH_V0. A stored declaration that

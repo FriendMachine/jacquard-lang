@@ -290,8 +290,101 @@ let test_closure_unparsable () =
     "the unparsable bytes are not retained" false
     (List.exists (fun (_, b) -> b = "(not a declaration") bodies)
 
+(* a cache file is opened only when it is the regular file at its path: a link (live or dangling),
+   a FIFO and a directory are refused, without blocking, following or creating anything *)
+let test_open_regular_refusals () =
+  let dir = Eval_support.fresh_dir () in
+  Unix.mkdir dir 0o700;
+  let at name = Filename.concat dir name in
+  let refused what path =
+    match Model_history.open_regular path [ Unix.O_RDWR ] with
+    | Ok fd ->
+        Unix.close fd;
+        Alcotest.failf "%s was opened" what
+    | Error _ -> ()
+    | exception Unix.Unix_error _ -> ()
+  in
+  Out_channel.with_open_bin (at "target") (fun oc -> output_string oc "kept");
+  Unix.symlink (at "target") (at "live");
+  refused "a live link" (at "live");
+  Alcotest.(check string)
+    "the link's target is untouched" "kept"
+    (In_channel.with_open_bin (at "target") In_channel.input_all);
+  Unix.symlink (at "absent") (at "dangling");
+  refused "a dangling link" (at "dangling");
+  Alcotest.(check bool)
+    "a dangling link's target is not created" false
+    (Sys.file_exists (at "absent"));
+  Unix.mkfifo (at "fifo") 0o600;
+  refused "a FIFO" (at "fifo");
+  Unix.mkdir (at "dir") 0o700;
+  refused "a directory" (at "dir")
+
+(* two processes that both find a lock absent race to create it: the one that loses opens the file
+   the other created, and still refuses a link put there instead *)
+let test_open_regular_created_meanwhile () =
+  let dir = Eval_support.fresh_dir () in
+  Unix.mkdir dir 0o700;
+  let path = Filename.concat dir "r.lock" in
+  let create () = Out_channel.with_open_bin path ignore in
+  (match Model_history.open_regular ~before_create:create path [ Unix.O_RDWR ] with
+  | Ok fd ->
+      let same = (Unix.fstat fd).Unix.st_ino = (Unix.lstat path).Unix.st_ino in
+      Unix.close fd;
+      Alcotest.(check bool) "the file created meanwhile is opened" true same
+  | Error reason -> Alcotest.failf "refused: %s" reason
+  | exception Unix.Unix_error (e, _, _) -> Alcotest.failf "failed: %s" (Unix.error_message e));
+  let path = Filename.concat dir "s.lock" and target = Filename.concat dir "s.target" in
+  let plant () = Unix.symlink target path in
+  (match Model_history.open_regular ~before_create:plant path [ Unix.O_RDWR ] with
+  | Ok fd ->
+      Unix.close fd;
+      Alcotest.fail "a link put there meanwhile was opened"
+  | Error _ | (exception Unix.Unix_error _) -> ());
+  Alcotest.(check bool) "the link's target is not created" false (Sys.file_exists target)
+
+(* an existing directory of ours that the owner cannot read, but others can reach, is still made
+   owner-only *)
+let test_private_dirs_unreadable () =
+  let root = Eval_support.fresh_dir () in
+  Unix.mkdir root 0o700;
+  let dir = Filename.concat root "outcomes" in
+  Unix.mkdir dir 0o700;
+  Unix.chmod dir 0o377;
+  let result =
+    Fun.protect
+      ~finally:(fun () -> Unix.chmod dir 0o700)
+      (fun () ->
+        let r = Model_eval.private_dirs ~root [ "outcomes" ] in
+        (r, (Unix.lstat dir).Unix.st_perm))
+  in
+  match result with
+  | Ok (), mode -> Alcotest.(check int) "the directory is owner-only" 0o700 mode
+  | Error _, _ -> Alcotest.fail "the directory was refused"
+
+let test_loader_image () =
+  List.iter
+    (fun p -> Alcotest.(check bool) p true (Model_eval.loader_image p))
+    [
+      "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2";
+      "/lib/ld-linux-aarch64.so.1";
+      "/lib/ld-musl-x86_64.so.1";
+      "/lib/ld-2.31.so";
+      "/lib/ld.so";
+      "/lib64/ld64.so.2";
+    ];
+  List.iter
+    (fun p -> Alcotest.(check bool) p false (Model_eval.loader_image p))
+    [ "/usr/bin/jacquard"; "/w/_build/default/bin/main.exe"; "/w/jq (deleted)"; "/w/old-ld" ]
+
 let suite =
   [
+    Alcotest.test_case "model build identity: a loader has none" `Quick test_loader_image;
+    Alcotest.test_case "model cache open_regular refusals" `Quick test_open_regular_refusals;
+    Alcotest.test_case "model cache lock created meanwhile" `Quick
+      test_open_regular_created_meanwhile;
+    Alcotest.test_case "model cache tightens an unreadable directory" `Quick
+      test_private_dirs_unreadable;
     Alcotest.test_case "model closure manifests parse strictly" `Quick test_parse_closure;
     Alcotest.test_case "model closure lists unloadable declarations" `Quick test_closure_unloadable;
     Alcotest.test_case "model closure lists unparsable declarations" `Quick test_closure_unparsable;

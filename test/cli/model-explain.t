@@ -169,7 +169,8 @@ earlier records.
       + type Shape = | Circle Int | Square Int | Tri Int
     dependents: area
   added    tri
-  $ jacquard model explain doc.model --json > a.json; grep -o '"diff":\[[^]]*\]' a.json | grep -c '#'
+  $ jacquard model explain doc.model --json > a.json; grep -o '"diff":\[[^]]*\]' a.json > diffs; grep -vc '"diff":\[\]' diffs; grep -c '#' diffs
+  2
   0
   [1]
   $ jacquard model eval doc.model > /dev/null
@@ -329,7 +330,7 @@ no cache directory.
   exit=0
   warning[W1801]: A model result could not be written to the cache.
     Cause: c/outcomes/BUILD/KEY: c/outcomes/BUILD: not a directory
-    Next step: Check that the cache directory is writable; the result itself is unaffected.
+    Next step: Make each cache path named in the cause a directory of its own, not a symbolic link or another kind of file; the result itself is unaffected.
   r: uncacheable (write-failed)
     value 2
   $ rm c/outcomes/$b; mv elsewhere c/outcomes/$b; mv c/outcomes outs; ln -s "$PWD/outs" c/outcomes
@@ -337,7 +338,7 @@ no cache directory.
   exit=0
   warning[W1801]: A model result could not be written to the cache.
     Cause: c/outcomes/BUILD/KEY: c/outcomes: not a directory
-    Next step: Check that the cache directory is writable; the result itself is unaffected.
+    Next step: Make each cache path named in the cause a directory of its own, not a symbolic link or another kind of file; the result itself is unaffected.
   r: uncacheable (write-failed)
     value 2
   $ rm c/outcomes; touch c/outcomes
@@ -345,7 +346,7 @@ no cache directory.
   exit=0
   warning[W1801]: A model result could not be written to the cache.
     Cause: c/outcomes/BUILD/KEY: c/outcomes: not a directory
-    Next step: Check that the cache directory is writable; the result itself is unaffected.
+    Next step: Make each cache path named in the cause a directory of its own, not a symbolic link or another kind of file; the result itself is unaffected.
   r: uncacheable (write-failed)
     value 2
   $ rm c/outcomes; mv outs c/outcomes; jacquard model eval doc.model --cache c
@@ -357,4 +358,27 @@ no cache directory.
   $ rm "$h"; mv hdir "$h"; mv c/snapshots snaps; ln -s "$PWD/snaps" c/snapshots
   $ jacquard model explain doc.model --cache c
   r: unknown (snapshots gone: inline 1, policy, entry f)
+  $ jacquard model eval doc.model --cache c > s.out 2>&1; echo "exit=$?"; cat s.out
+  exit=0
+  warning[W1802]: A model result's history could not be written.
+    Cause: result r: c/snapshots: not a directory
+    Next step: Make each cache path named in the cause a directory of its own, not a symbolic link or another kind of file; the result itself is unaffected.
+  r: cached
+    value 2
+  $ rm c/snapshots; mv snaps c/snapshots
+
+An outcome path that is a directory cannot be replaced by a file: the result
+is not stored, and the warning says what is in the way.
+
+  $ o=$(ls -d c/outcomes/*/*); rm "$o"; mkdir "$o"
+  $ jacquard model eval doc.model --cache c > d.out 2>&1; echo "exit=$?"; sed -E 's#outcomes/[0-9a-f]+/[0-9a-f]+#outcomes/BUILD/KEY#' d.out
+  exit=0
+  warning[W1801]: A model result could not be written to the cache.
+    Cause: c/outcomes/BUILD/KEY: a directory is in the way
+    Next step: Remove that directory so the result can be stored; the result itself is unaffected.
+  r: uncacheable (write-failed)
+    value 2
+  $ rmdir "$o"; jacquard model eval doc.model --cache c
+  r: fresh
+    value 2
   $ cd ..

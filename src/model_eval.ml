@@ -338,10 +338,22 @@ let rec make_dirs dir =
     make_dirs (Filename.dirname dir);
     try Unix.mkdir dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
 
+type history_failure = { reason : string; next_step : string option }
+
 (* directories under a cache root that this process has made private *)
 let private_done : (string, unit) Hashtbl.t = Hashtbl.create 8
 
+let not_own_directory_step =
+  "Make each cache path named in the cause a directory of its own, not a symbolic link or another \
+   kind of file; the result itself is unaffected."
+
 let private_dirs ~root parts =
+  let failed dir e =
+    { reason = Printf.sprintf "%s: %s" dir (Unix.error_message e); next_step = None }
+  in
+  let refused dir what =
+    { reason = Printf.sprintf "%s: %s" dir what; next_step = Some not_own_directory_step }
+  in
   let one dir =
     if Hashtbl.mem private_done dir then Ok ()
     else
@@ -351,18 +363,31 @@ let private_dirs ~root parts =
           | () | (exception Unix.Unix_error (Unix.EEXIST, _, _)) ->
               Hashtbl.replace private_done dir ();
               Ok ()
-          | exception Unix.Unix_error (e, _, _) ->
-              Error (Printf.sprintf "%s: %s" dir (Unix.error_message e)))
-      | exception Unix.Unix_error (e, _, _) ->
-          Error (Printf.sprintf "%s: %s" dir (Unix.error_message e))
+          | exception Unix.Unix_error (e, _, _) -> Error (failed dir e))
+      | exception Unix.Unix_error (e, _, _) -> Error (failed dir e)
       | { Unix.st_kind = Unix.S_DIR; st_perm; st_uid; st_dev; st_ino; _ } ->
           (* an existing directory of ours that others can reach is tightened, through the
              directory opened and found to be the one checked (a link swapped in meanwhile is
              refused, never followed); one owned by someone else is used as it is *)
+          let still_checked () =
+            match Unix.lstat dir with
+            | { Unix.st_kind = Unix.S_DIR; st_dev = d; st_ino = i; _ } -> d = st_dev && i = st_ino
+            | _ | (exception Unix.Unix_error _) -> false
+          in
           let tightened =
             if st_perm land 0o077 = 0 || st_uid <> Unix.getuid () then Ok ()
             else
               match Unix.openfile dir [ Unix.O_RDONLY; Unix.O_NONBLOCK; Unix.O_CLOEXEC ] 0 with
+              | exception Unix.Unix_error (Unix.EACCES, _, _) ->
+                  (* one the owner cannot read cannot be opened (there is no O_PATH here), so its
+                     mode is changed by path, between two checks that it is the same directory:
+                     only a link swapped in within that window, to a file of the user's, is
+                     followed, and it is then refused *)
+                  if not (still_checked ()) then Error (refused dir "replaced while it was checked")
+                  else (
+                    (try Unix.chmod dir 0o700 with Unix.Unix_error _ -> ());
+                    if still_checked () then Ok ()
+                    else Error (refused dir "replaced while it was checked"))
               | exception Unix.Unix_error _ -> Ok ()
               | fd ->
                   Fun.protect
@@ -375,12 +400,11 @@ let private_dirs ~root parts =
                             Unix.fchmod fd 0o700;
                             Ok ()
                           with Unix.Unix_error _ -> Ok ())
-                      | _ -> Error (Printf.sprintf "%s: replaced while it was checked" dir)
-                      | exception Unix.Unix_error (e, _, _) ->
-                          Error (Printf.sprintf "%s: %s" dir (Unix.error_message e)))
+                      | _ -> Error (refused dir "replaced while it was checked")
+                      | exception Unix.Unix_error (e, _, _) -> Error (failed dir e))
           in
           Result.map (fun () -> Hashtbl.replace private_done dir ()) tightened
-      | _ -> Error (Printf.sprintf "%s: not a directory" dir)
+      | _ -> Error (refused dir "not a directory")
   in
   try
     make_dirs root;
@@ -391,7 +415,8 @@ let private_dirs ~root parts =
           Result.bind (one dir) (fun () -> go dir rest)
     in
     go root parts
-  with (Unix.Unix_error _ | Sys_error _) as e -> Error (Printexc.to_string e)
+  with (Unix.Unix_error _ | Sys_error _) as e ->
+    Error { reason = Printexc.to_string e; next_step = None }
 
 let check_dirs ~root parts =
   let rec go dir = function
@@ -411,14 +436,25 @@ let check_dirs ~root parts =
    executable's path is replaced or removed; where there is no such path, there is no identity *)
 let running_image = "/proc/self/exe"
 
+(* a program started through the dynamic loader ([ld.so ./jacquard]) runs the loader's image, which
+   would identify every such build alike; an image named as a loader has no identity *)
+let loader_image name =
+  List.exists
+    (fun prefix -> String.starts_with ~prefix (Filename.basename name))
+    [ "ld-"; "ld."; "ld64." ]
+
 let build_identity =
   lazy
-    (match Model_doc.read_bounded ~limit:max_int running_image with
-    | Ok bytes ->
-        Some
-          (Hash.to_hex
-             (Hash.of_string ("jacquard-model-build-v1\000" ^ Version.version ^ "\000" ^ bytes)))
-    | Error _ -> None)
+    (match Unix.readlink running_image with
+    | exception Unix.Unix_error _ -> None
+    | image when loader_image image -> None
+    | _ -> (
+        match Model_doc.read_bounded ~limit:max_int running_image with
+        | Ok bytes ->
+            Some
+              (Hash.to_hex
+                 (Hash.of_string ("jacquard-model-build-v1\000" ^ Version.version ^ "\000" ^ bytes)))
+        | Error _ -> None))
 
 let random = lazy (Random.State.make_self_init ())
 
@@ -459,7 +495,10 @@ let status_tag = function
   | Uncacheable reason -> "uncacheable-" ^ reason
   | Refused _ -> "refused"
 
-type history_failure = { reason : string; next_step : string option }
+let is_directory path =
+  match Unix.lstat path with
+  | { Unix.st_kind = Unix.S_DIR; _ } -> true
+  | _ | (exception Unix.Unix_error _) -> false
 
 let evaluate ?(record = fun _ ~outcome:_ -> Ok None) ?build ~ctx ~allows ~seed ~cache ~out
     (prepared : Model_doc.prepared) =
@@ -519,6 +558,8 @@ let evaluate ?(record = fun _ ~outcome:_ -> Ok None) ?build ~ctx ~allows ~seed ~
             let path = path dir build key in
             match read_cache path with
             | `Absent -> None
+            (* a directory there cannot be replaced by a file: the write reports it *)
+            | `Unreadable _ when is_directory path -> None
             | `Unreadable reason ->
                 warn ~code:"W1800" (Printf.sprintf "%s: %s" path reason);
                 None
@@ -550,12 +591,25 @@ let evaluate ?(record = fun _ ~outcome:_ -> Ok None) ?build ~ctx ~allows ~seed ~
                 | None, [], `No_build -> Uncacheable "no-build-identity"
                 | None, [], `Path (dir, build, key) -> (
                     let path = path dir build key in
-                    match
-                      Result.bind dirs (fun () -> write_atomic path (serialize dependency outcome))
-                    with
+                    let written =
+                      Result.bind dirs (fun () ->
+                          match write_atomic path (serialize dependency outcome) with
+                          | Ok () -> Ok ()
+                          | Error _ when is_directory path ->
+                              Error
+                                {
+                                  reason = "a directory is in the way";
+                                  next_step =
+                                    Some
+                                      "Remove that directory so the result can be stored; the \
+                                       result itself is unaffected.";
+                                }
+                          | Error reason -> Error { reason; next_step = None })
+                    in
+                    match written with
                     | Ok () -> Fresh
-                    | Error reason ->
-                        warn ~code:"W1801" (Printf.sprintf "%s: %s" path reason);
+                    | Error { reason; next_step } ->
+                        warn ?next_step ~code:"W1801" (Printf.sprintf "%s: %s" path reason);
                         Uncacheable "write-failed")
               in
               { name; key; status; outcome = Some outcome })

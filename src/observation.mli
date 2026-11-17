@@ -44,7 +44,8 @@ type event =
               knows it: trace metadata, never part of a value or identity *)
       choice : string option;
           (** EXP.2: the name a [dist.named] call gave this [sample] (then [site] is that call's
-              span), in a recording run only: trace metadata like [site] *)
+              span, or the [sample] in [dist.named]'s declaration when a host or native applied it),
+              in a recording run only: trace metadata like [site] *)
     }
       (** An operation crossed every language handler and reached the root, before any root handler
           ran or a driver captured it. [name] is display-only; [operation] is its identity. The

@@ -94,24 +94,49 @@ recording it also names the draw. Its `choice` step carries a `choice-name`
 line with the name and `draw=k`, the number of earlier recorded draws under the
 same name (from 0), so a choice inside a loop or a recursion is addressed by
 `(name, k)` rather than by its step index. The step's site is the `dist.named`
-call in the program, not the `sample` inside the prelude function.
+call in the program, not the `sample` inside the prelude function. When the
+evaluator does not know that call's span (a host or a native applied the
+`dist.named` value itself, as with `Eval.apply_state`), the step keeps its name
+and is sited at the `sample` in `dist.named`'s own declaration, like any
+operation inside a prelude function (§2).
 
 - A `sample` with no name has no `choice-name` line. It is addressable only by
   its step index, which a different path can shift; reports built on the log
   (EXP.3, EXP.4) mark such forks as position-addressed.
 - Only a draw that reaches the root is a step. A named choice an in-language
-  driver handles (`dist.enumerate`, `dist.sample-lw`) is not recorded and does
-  not count toward k.
+  driver handles (`dist.enumerate`) is not recorded and does not count toward
+  k. A native driver (`dist.sample-lw`) captures its draws at the root, so each
+  is a `choice` step with its result `missing` (§1).
+- k counts every recorded draw under the name in the run, in step order. Under
+  a native driver it keeps counting across the driver's runs: the same choice
+  in its second weighted run has the next k, not 0 again. Every recorded draw
+  therefore has its own address.
+- Only the `sample` in `dist.named`'s body is named. An application that fails
+  or runs out of fuel before its draw (a per-branch fuel cap can end it there
+  and let the run continue) leaves nothing behind: the next operation keeps
+  its own site and no name.
 - The name is redacted like any field (§3): an exposed secret inside it is
   replaced, and once a secret's plaintext is unknown the name is recorded as
-  `<secret redacted>`. k still counts draws under the original name.
+  `<secret redacted>`. k still counts draws under the original name, so two
+  different names that redact to the same text are counted separately and can
+  show the same `(name, k)`: after redaction the shown address need not be
+  unique, and the counts show which redacted draws had the same original name.
+  Nothing reads the address yet; a fork engine that does (EXP.3) must refuse
+  an ambiguous one rather than pick a step.
 - A handler that forwards the draw (`sample(d) resume k -> k(sample(d))`)
   performs a new, unnamed `sample`: the name belongs to the draw `dist.named`
   performed, which that handler caught, so the forwarded root step is unnamed.
 - The `choice-name` line was added to format 1 before any release carried the
   format, so format 1 has always allowed it.
-- Tagging happens only while recording: `dist.named` adds nothing to a plain
-  run, and its fuel cost is that of any function application.
+- Tagging happens only while recording and costs no fuel: `dist.named` adds
+  nothing to a plain run. A draw through it costs what applying any
+  two-parameter function that performs `sample` costs (`wrap(name, d) =
+  sample(d)`), a few units more than a bare `sample`: the application, its
+  extra argument and the parameter bindings. That cost is in the prelude
+  term, so lowering it would change the prelude's identity. A recording under
+  a policy that keeps nothing uses the same fuel as the plain run; the default
+  policy's projections (§1) are the only recording cost, counted in fine units
+  and reported rounded up, so a recorded run can report one unit more.
 
 ## 3. Exposure
 

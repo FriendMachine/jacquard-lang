@@ -1881,6 +1881,96 @@ let test_typed_events () =
       ignore (Eval.run_expr ctx greet));
   Alcotest.(check int) "no events after the observer ended" before (List.length !seen)
 
+(* --- named choices (EXP.2) --- *)
+
+let named_hash store =
+  match Prelude_identity.lookup_kind store "dist.named" Resolve.KTerm with
+  | Some { Resolve.hash; _ } -> hash
+  | None -> Alcotest.fail "dist.named is not in the prelude"
+
+(* each root operation's choice name and site file, oldest first *)
+let observe_named ctx store body =
+  let seen = ref [] in
+  let result =
+    Eval.with_invocation ~fuel:1_000_000 ctx (fun _ ->
+        Eval.with_named_choices ctx
+          (Some (named_hash store))
+          (fun () ->
+            Eval.with_observer ctx
+              (function
+                | Observation.Operation { name; choice; site; _ } ->
+                    seen :=
+                      (name, choice, Option.map (fun (s : Span.t) -> Filename.basename s.file) site)
+                      :: !seen
+                | _ -> ())
+              body))
+  in
+  (result, List.rev !seen)
+
+let show_named (name, choice, site) =
+  Printf.sprintf "%s %s @%s" name
+    (Option.value ~default:"-" choice)
+    (Option.value ~default:"unknown" site)
+
+let named_events = Alcotest.(list string)
+
+(* a [dist.named] application that runs out of a fuel scope before its [sample] leaves no name
+   behind: the next draw and the next operation are untagged and keep their own sites *)
+let test_named_choice_no_stale_name () =
+  let store, ctx = prepared "named-stale" "" in
+  let draw = expression store "dist.named(\"stale\", Bernoulli(0.5))" in
+  let plain = expression store "{ print(\"p\"); sample(Bernoulli(0.5)) }" in
+  let sink = Buffer.create 16 in
+  let cut_before_draw = ref 0 and named = ref 0 in
+  for cap = 0 to 60 do
+    let (), seen =
+      observe_named ctx store (fun () ->
+          grant_console ctx sink;
+          let _, exhausted, _ =
+            Eval.with_fuel_scope ctx ~fuel:cap (fun () ->
+                Eval.run_state_capturing ctx (Eval.expr_state draw))
+          in
+          if exhausted && Eval.fuel_exhausted ctx then
+            Alcotest.failf "cap %d exhausted the invocation" cap;
+          ignore (Eval.run_state_capturing ctx (Eval.expr_state plain)))
+    in
+    let seen = List.map show_named seen in
+    match seen with
+    | [ "print - @e.jac"; "sample - @e.jac" ] -> incr cut_before_draw
+    | [ "sample stale @e.jac"; "print - @e.jac"; "sample - @e.jac" ] -> incr named
+    | _ -> Alcotest.failf "cap %d: %s" cap (String.concat "; " seen)
+  done;
+  Alcotest.(check bool) "some caps stop before the draw" true (!cut_before_draw > 0);
+  Alcotest.(check bool) "some caps reach the draw" true (!named > 0)
+
+(* a host application has no call site: the draw keeps its name and is sited at the [sample] in
+   dist.named's own declaration; the name belongs to the draw, not to whatever operation runs next
+   after the state is built *)
+let test_named_choice_host_apply () =
+  let store, ctx = prepared "named-host" "" in
+  let value source =
+    match Eval.run_expr ctx (expression store source) with
+    | Ok v -> v
+    | Error e -> Alcotest.failf "%s: %s" source (Runtime_err.to_string e)
+  in
+  let named_value = value "dist.named" and coin = value "Bernoulli(0.5)" in
+  let plain = expression store "sample(Bernoulli(0.5))" in
+  let (), seen =
+    observe_named ctx store (fun () ->
+        let state = Eval.apply_state ctx named_value [ Value.VText "host"; coin ] in
+        ignore (Eval.run_state_capturing ctx (Eval.expr_state plain));
+        ignore (Eval.run_state_capturing ctx state))
+  in
+  (* the prelude body is served from its store object, a [<hash>.jqd] span *)
+  let store_object (name, choice, site) =
+    ( name,
+      choice,
+      Option.map (fun f -> if Filename.check_suffix f ".jqd" then "store object" else f) site )
+  in
+  Alcotest.check named_events "host application"
+    [ "sample - @e.jac"; "sample host @store object" ]
+    (List.map (fun e -> show_named (store_object e)) seen)
+
 let test_observer_cannot_evaluate () =
   let store, ctx = prepared "observe-refuse" "" in
   let greet = expression store "print(\"x\")" and one = expression store "add(1, 2)" in
@@ -2117,4 +2207,8 @@ let suite =
     Alcotest.test_case "typed root events are ordered and single" `Quick test_typed_events;
     Alcotest.test_case "observers cannot evaluate and failures propagate" `Quick
       test_observer_cannot_evaluate;
+    Alcotest.test_case "an interrupted named choice leaves no name behind" `Quick
+      test_named_choice_no_stale_name;
+    Alcotest.test_case "a host-applied named choice keeps its name" `Quick
+      test_named_choice_host_apply;
   ]

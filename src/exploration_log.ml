@@ -497,7 +497,8 @@ let parse bytes =
                 if kind <> Choice_step then fail "a choice-name on a %s step" (kind_name kind);
                 let k =
                   match String.split_on_char ' ' l with
-                  | [ _; d; _ ] -> int_of (after "draw=" d)
+                  | [ "choice-name"; d; b ] when String.starts_with ~prefix:"bytes=" b ->
+                      int_of (after "draw=" d)
                   | _ -> fail "bad choice-name line %S" l
                 in
                 if k < 0 then fail "bad draw %d" k;
@@ -513,7 +514,7 @@ let parse bytes =
                 | Some l when String.starts_with ~prefix:"argument index=" l ->
                     let i =
                       match String.split_on_char ' ' l with
-                      | _ :: idx :: _ -> (
+                      | "argument" :: idx :: _ -> (
                           match int_of (after "index=" idx) with
                           | i when i < 0 -> fail "bad argument index %d" i
                           | i when i <= !previous ->

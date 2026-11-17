@@ -270,11 +270,11 @@ Warp see the same model.
   > model()
   > JAC
   $ sed 's/dist.named("[a-z]*", \([^)]*)\))/sample(\1)/g' named.jac > unnamed.jac
-  $ jacquard infer enumerate named.jac > named.enum; jacquard infer enumerate unnamed.jac > unnamed.enum; cmp named.enum unnamed.enum && echo same
+  $ jacquard infer enumerate named.jac > named.enum || echo "exit=$?"; jacquard infer enumerate unnamed.jac > unnamed.enum || echo "exit=$?"; cmp named.enum unnamed.enum && echo same
   same
-  $ jacquard infer lw named.jac --seed 5 --samples 200 > named.lw; jacquard infer lw unnamed.jac --seed 5 --samples 200 > unnamed.lw; cmp named.lw unnamed.lw && echo same
+  $ jacquard infer lw named.jac --seed 5 --samples 200 > named.lw || echo "exit=$?"; jacquard infer lw unnamed.jac --seed 5 --samples 200 > unnamed.lw || echo "exit=$?"; cmp named.lw unnamed.lw && echo same
   same
-  $ jacquard run named.jac --allow dist --seed 9 > named.run; jacquard run unnamed.jac --allow dist --seed 9 > unnamed.run; cmp named.run unnamed.run && echo same
+  $ jacquard run named.jac --allow dist --seed 9 > named.run || echo "exit=$?"; jacquard run unnamed.jac --allow dist --seed 9 > unnamed.run || echo "exit=$?"; cmp named.run unnamed.run && echo same
   same
   $ cat > named-tests.jac <<'JAC'
   > named-model() = if dist.named("rain", Bernoulli(0.3)) then dist.named("die", UniformInt(1, 2)) else dist.named("die", UniformInt(1, 3))
@@ -289,6 +289,36 @@ Warp see the same model.
   PASS named-draws/named draws (prop: 100 cases, seed 7)
   PASS same-posterior/enumerate sees the same model (1 check)
   2 passed, 0 failed, 0 skipped, 0 refused
+
+Warp draws the same choices for dist.named as for sample under one seed: a
+falsified property reports the same case and shrunk choices for both, and
+another seed reports different ones.
+
+  $ cat > warp-named.jac <<'JAC'
+  > pair-sum = prop("pair sum", fn () -> { let x = dist.named("x", UniformInt(1, 100)); let y = dist.named("y", UniformInt(1, 100)); check.true(lt(add(x, y), 150), text.concat("sum ", debug.inspect(add(x, y)))) })
+  > JAC
+  $ sed 's/dist.named("[a-z]*", \([^)]*)\))/sample(\1)/g' warp-named.jac > warp-unnamed.jac; grep -c dist.named warp-unnamed.jac || true
+  0
+  $ jacquard test warp-named.jac --seed 7 --no-cache > warp-named.7 || echo "exit=$?"; jacquard test warp-unnamed.jac --seed 7 --no-cache > warp-unnamed.7 || echo "exit=$?"; cmp warp-named.7 warp-unnamed.7 && echo same
+  exit=1
+  exit=1
+  same
+  $ head -1 warp-named.7
+  FAIL pair-sum/pair sum (prop: falsified on case 3 of 100, seed 7; shrunk to 2 choices [52;96])
+  $ jacquard test warp-named.jac --seed 8 --no-cache > warp-named.8 || echo "exit=$?"; cmp -s warp-named.7 warp-named.8 || echo differs
+  exit=1
+  differs
+
+dist.named costs what applying any two-argument function that performs sample
+costs, and recording under a policy that keeps nothing leaves the fuel of a run
+unchanged (the default policy's projections draw on the run's fuel, §1).
+
+  $ printf 'wrap(name, d) = sample(d)\n\nwrap("d", UniformInt(1, 6))\n' > wrap.jac
+  $ printf 'dist.named("d", UniformInt(1, 6))\n' > bare-named.jac
+  $ jacquard run wrap.jac --allow dist --seed 1 --fuel 1000 2> wrap.fuel > /dev/null || echo "exit=$?"; jacquard run bare-named.jac --allow dist --seed 1 --fuel 1000 2> named.fuel > /dev/null || echo "exit=$?"; cmp wrap.fuel named.fuel && echo same
+  same
+  $ jacquard run bare-named.jac --allow dist --seed 1 --fuel 1000 --record quiet-named.log --record-policy none.policy 2> quiet-named.fuel > /dev/null || echo "exit=$?"; cmp named.fuel quiet-named.fuel && echo same
+  same
 
 A recording names each draw (name, k), k counting earlier draws under that
 name, at the dist.named call site; an unnamed sample keeps no name and is
@@ -332,6 +362,24 @@ step and leaves no pending name behind for a later root draw.
   1
   0
 
+A native driver (dist.sample-lw) captures its draws at the root, so they are
+steps; k counts draws under a name across all of its runs, so each draw of one
+recording has its own address.
+
+  $ printf 'dist.sample-lw(fn () -> dist.named("c", Bernoulli(0.5)), 3, 7)\n' > lw-named.jac
+  $ jacquard run lw-named.jac --seed 1 --record lw-named.log > /dev/null; echo "exit=$?"
+  exit=0
+  $ grep -E '^(step|choice-name|result)' lw-named.log | cut -d' ' -f1-2
+  step index=0
+  choice-name draw=0
+  result missing
+  step index=1
+  choice-name draw=1
+  result missing
+  step index=2
+  choice-name draw=2
+  result missing
+
 A name is redacted like any field: an exposed secret inside it is not recorded,
 and the draw count still follows the name as written.
 
@@ -353,6 +401,27 @@ and the draw count still follows the name as written.
   choice-name draw=0 bytes=22
   pick-<secret redacted>
   choice-name draw=1 bytes=22
+  pick-<secret redacted>
+
+Because k follows the name as written, two different names that redact to the
+same text are counted separately and can show the same (name, k).
+
+  $ cat > named-collide.jac <<'JAC'
+  > pick() = {
+  >   let plain = secret.expose(secret.read(secret-ref("deploy-token", None)))
+  >   let a = dist.named(text.concat("pick-", plain), UniformInt(1, 2))
+  >   let b = dist.named("pick-<secret redacted>", UniformInt(1, 2))
+  >   add(a, b)
+  > }
+  > 
+  > pick()
+  > JAC
+  $ env "$key=hunter2zz" jacquard run named-collide.jac --allow secret --allow dist --seed 1 --record nc.log > /dev/null; echo "exit=$?"
+  exit=0
+  $ grep -A1 '^choice-name' nc.log | grep -v '^--'
+  choice-name draw=0 bytes=22
+  pick-<secret redacted>
+  choice-name draw=0 bytes=22
   pick-<secret redacted>
 
 A splice two quasiquote levels down (quote { quote { unquote(unquote(...)) } })

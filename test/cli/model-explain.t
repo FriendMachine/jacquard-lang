@@ -169,7 +169,7 @@ earlier records.
       + type Shape = | Circle Int | Square Int | Tri Int
     dependents: area
   added    tri
-  $ jacquard model explain doc.model --json | grep -o '"diff":\[[^]]*\]' | grep -c '#'
+  $ jacquard model explain doc.model --json > a.json; grep -o '"diff":\[[^]]*\]' a.json | grep -c '#'
   0
   [1]
   $ jacquard model eval doc.model > /dev/null
@@ -352,9 +352,9 @@ no cache directory.
   r: cached
     value 2
   $ h=$(ls -d c/history/*); mv "$h" hdir; ln -s "$PWD/hdir" "$h"
-  $ jacquard model explain doc.model --cache c | sed -E 's#c/history/[0-9a-f]+#c/history/DOC#; s/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/'
+  $ jacquard model explain doc.model --cache c > h.out; sed -E 's#c/history/[0-9a-f]+#c/history/DOC#' h.out
   r: history unavailable (c/history/DOC: not a directory)
   $ rm "$h"; mv hdir "$h"; mv c/snapshots snaps; ln -s "$PWD/snaps" c/snapshots
-  $ jacquard model explain doc.model --cache c | sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/'
+  $ jacquard model explain doc.model --cache c
   r: unknown (snapshots gone: inline 1, policy, entry f)
   $ cd ..

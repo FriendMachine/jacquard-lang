@@ -4,8 +4,9 @@ changed callee, the readable `jacquard diff` of its two retained bodies
 each side naming its own members first). Callees are named once per
 declaration with their kinds, as the surface spells them: a declaration's
 aliases and the members of a group or type are one change (`callee term bump,
-inc changed`, `callee type Wrap, con W changed`); the JSON change keeps
-`subject` and adds `names` (each `{kind, name}`) and `diff`. A declaration
+inc changed`, `callee con W, type Wrap changed`); the JSON change keeps
+`subject` as the plain names (several, comma-separated, for a grouped change)
+and adds `names` (each `{kind, name}`) and `diff`. A declaration
 whose stored bytes exceed the 16 MiB retention limit adds a `note:` line (JSON
 `notes`) saying why its result stays unknown.
 

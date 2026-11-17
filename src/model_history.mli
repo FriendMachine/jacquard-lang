@@ -59,8 +59,9 @@ val append :
     result has no history, when its latest record has another key, or, as a refresh under the same
     key, when the latest record names a snapshot that is gone and a refresh would name other
     snapshots. The read, the decision and the write hold an exclusive lock on a sibling [.lock]
-    file. The [history] and [snapshots] directories are made owner-only; a history, lock or snapshot
-    path that is a symbolic link is refused, never followed.
+    file. The [history] and [snapshots] directories are made owner-only. A cache path that is a
+    symbolic link is never followed: a history or lock is refused, and a snapshot is rewritten as a
+    file.
 
     [Ok None] is success; [Ok (Some note)] means a history with a damaged frame kept every record
     before it and was rewritten atomically, and the note says so. [Error failure] leaves the history
@@ -89,8 +90,9 @@ type change = {
           kind or name), an argument kind (["assumption"], ["inline"], ["input"], ["term"]) for a
           changed value, or ["callee"] for a declaration a changed entry or term argument reaches *)
   subject : string option;
-      (** the entry, assumption, input or term name; for a callee, its names with their kinds as the
-          surface spells them, such as ["term add, int.add"] or ["type Wrap, con W"] *)
+      (** the entry, assumption, input or term name; for a callee, its kernel names, such as
+          ["add, int.add"] (the text rendering spells them with their kinds, from [names], such as
+          ["term add, int.add"] or ["con W, type Wrap"]) *)
   before : string option;
   after : string option;  (** for a callee, ["added"] or ["removed"], or [None] when it changed *)
   names : (string * string) list;

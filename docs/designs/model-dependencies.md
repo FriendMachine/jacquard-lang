@@ -402,8 +402,8 @@ guessed. Host 13 consumes `--json` of both commands.
   type the entry reaches is still followed). Names bound to the same
   declarations on both sides are one change, listed with their kinds as the
   surface spells them: a declaration's aliases (`callee term bump, inc
-  changed`) and the members of a group or type (`callee type Wrap, con W
-  changed`). A changed callee whose two retained bodies are available is
+  changed`) and the members of a group or type (`callee con W, type Wrap
+  changed`); the JSON `subject` holds the plain names (`bump, inc`). A changed callee whose two retained bodies are available is
   followed by the readable `jacquard diff` of them, indented. Without both
   manifests (a pruned snapshot, or a record from before 3b, which has no
   `entry-closure` line and still parses) only the change itself is named. A

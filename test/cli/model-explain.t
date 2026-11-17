@@ -57,7 +57,10 @@ line, each name spelled as the surface spells it, followed by the readable
       body       1  ->  3
     callee term even, odd changed
       clause 1   True  ->  eq(0, 0)
-  $ jacquard model explain doc.model --json > a.json; grep -o '"names":\[[^]]*\]' a.json; grep -o '"diff":' a.json | wc -l
+  $ jacquard model explain doc.model --json > a.json; grep -o '"subject":"[^"]*"' a.json; grep -o '"names":\[[^]]*\]' a.json; grep -o '"diff":' a.json | wc -l
+  "subject":"go"
+  "subject":"bump, inc"
+  "subject":"even, odd"
   "names":[{"kind":"term","name":"bump"},{"kind":"term","name":"inc"}]
   "names":[{"kind":"term","name":"even"},{"kind":"term","name":"odd"}]
   2
@@ -75,6 +78,27 @@ line, each name spelled as the surface spells it, followed by the readable
         body       1  ->  3
       callee term even, odd changed
         clause 1   True  ->  eq(0, 0)
+  $ cd ..
+
+A longer change is stacked as `-`/`+` lines.
+
+  $ mkdir stacked && cd stacked
+  $ printf 'score(a, b) = add(mul(a, 1000), mul(b, 2000))\ngo(n) = score(n, n)\n' > m.jac
+  $ printf 'jacquard-model format=1\nsource m.jac\nresult g entry go args 1 driver run fuel=10000\n' > doc.model
+  $ jacquard model eval doc.model > /dev/null
+  $ sed -i 's/= add(mul(a, 1000), mul(b, 2000))/= if eq(a, b) then mul(a, 1000) else add(mul(a, 1000), mul(b, 2000))/' m.jac
+  $ jacquard model explain doc.model > s.out; sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/' s.out
+  g: stale (last evaluated TIME)
+    entry go changed
+    callee type Bool, con False, True added
+    callee term eq added
+    callee term score changed
+      body
+        - add(int.mul(a, 1000), int.mul(b, 2000))
+        + match eq(a, b) {
+            | True -> int.mul(a, 1000)
+            | False -> add(int.mul(a, 1000), int.mul(b, 2000))
+          }
   $ cd ..
 
 A history larger than 64 MiB is never read: evaluation leaves it untouched

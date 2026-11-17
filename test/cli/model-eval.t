@@ -473,6 +473,7 @@ result is current again.
       entry go changed
       callee term wrap changed
         body       n  ->  m
+        body       n  ->  m
         body       4  ->  5
   $ cd .. && mkdir root && cd root
   $ printf 'type Wrap = W Int\nwrap(n) = W(n)\n' > m.jac

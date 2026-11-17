@@ -727,14 +727,7 @@ let body_diff ~(store : Store.t) ~label (old_decl, old_body) (new_decl, new_body
           ~new_side:(Diff.source_side store [ n ])
           [ (label, Diff.Changed { divergences; dependents = []; origin = None }) ]
       with
-      | Some text -> (
-          (* two divergences in one region can render alike (a renamed parameter): show it once *)
-          let rec once = function
-            | a :: (b :: _ as rest) when String.equal a b -> once rest
-            | a :: rest -> a :: once rest
-            | [] -> []
-          in
-          match String.split_on_char '\n' text with _ :: rest -> once rest | [] -> [])
+      | Some text -> ( match String.split_on_char '\n' text with _ :: rest -> rest | [] -> [])
       | None -> [])
   | _ -> []
 
@@ -803,7 +796,8 @@ let differences ~store old_ now_ =
           (fun g ->
             let keys, a, b = Hashtbl.find groups g in
             let names = List.rev_map (fun (name, kind) -> (kind, name)) keys in
-            let subject = names_text names in
+            (* the JSON subject stays the plain names; text spells them with their kinds *)
+            let subject = String.concat ", " (List.map snd names) in
             let body side (d, b) =
               Option.bind (Hash.of_canonical_hex b) (fun h ->
                   Option.map (fun text -> (d, text)) (side.content h))
@@ -814,7 +808,7 @@ let differences ~store old_ now_ =
             | [ x ], [ y ] ->
                 let diff =
                   match (body old_ x, body now_ y) with
-                  | Some x, Some y -> body_diff ~store ~label:subject x y
+                  | Some x, Some y -> body_diff ~store ~label:(names_text names) x y
                   | _ -> []
                 in
                 change ~subject ~names ~diff "callee"
@@ -1085,7 +1079,12 @@ let explain ~cache ~document (prepared : Model_doc.prepared) =
   List.map one prepared.Model_doc.resolved
 
 let change_text c =
-  let subject = match c.subject with Some s -> " " ^ s | None -> "" in
+  let subject =
+    match (c.names, c.subject) with
+    | _ :: _, _ -> " " ^ names_text c.names
+    | [], Some s -> " " ^ s
+    | [], None -> ""
+  in
   match (c.before, c.after) with
   | Some b, Some a -> Printf.sprintf "%s%s: %s -> %s" c.component subject b a
   | None, Some status -> Printf.sprintf "%s%s %s" c.component subject status

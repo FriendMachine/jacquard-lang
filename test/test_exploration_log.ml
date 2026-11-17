@@ -77,6 +77,22 @@ let test_strict_parse () =
     (Str.global_replace (Str.regexp_string "truncated total=9000") "truncated total=3" bytes);
   refused "negative draw"
     (Str.global_replace (Str.regexp_string "choice-name draw=2") "choice-name draw=-2" bytes);
+  (* the choice-name line is exactly [choice-name draw=K bytes=N]: a near miss in any token is
+     refused, never skipped or read as another line *)
+  List.iter
+    (fun (label, line) ->
+      refused label (Str.global_replace (Str.regexp_string "choice-name draw=2 bytes=") line bytes))
+    [
+      ("choice-name first token", "choice-names draw=2 bytes=");
+      ("choice-name case", "Choice-name draw=2 bytes=");
+      ("choice-name extra space", "choice-name  draw=2 bytes=");
+      ("choice-name draw spelling", "choice-name drew=2 bytes=");
+      ("choice-name padded draw", "choice-name draw=02 bytes=");
+      ("choice-name missing bytes", "choice-name draw=2 size=");
+      ("choice-name trailing token", "choice-name draw=2 x bytes=");
+    ];
+  refused "argument first token"
+    (Str.global_replace (Str.regexp_string "argument index=2") "arguments index=2" bytes);
   refused "a choice name on an operation step"
     (L.serialize
        {

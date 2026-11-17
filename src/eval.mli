@@ -121,9 +121,12 @@ val register_root_handler :
 
 val with_named_choices : ctx -> Hash.t option -> (unit -> 'a) -> 'a
 (** [with_named_choices ctx named f] runs [f] with [named] as the [dist.named] member identity
-    (EXP.2): while an observer is installed, a [dist.named(label, d)] application tags the [sample]
-    it performs next with [label] and its own call site ([Observation.Operation.choice]). Values,
-    fuel and control flow are unchanged; [None] (the default) disables tagging. *)
+    (EXP.2): while an observer is installed, the [sample] that a [dist.named(label, d)] body
+    performs is tagged with [label] ([Observation.Operation.choice]) and sited at that application
+    when the evaluator knows its span, else at the [sample] in the prelude body (an application by a
+    host or native caller). No other operation is tagged, even after a failed or exhausted
+    application. Values, fuel and control flow are unchanged; [None] (the default) disables tagging.
+*)
 
 val with_observer : ctx -> (Observation.event -> unit) -> (unit -> 'a) -> 'a
 (** [with_observer ctx on_event f] delivers the typed root events of [ctx] (RF.3,

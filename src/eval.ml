@@ -200,9 +200,10 @@ type ctx = {
   mutable named_choice : Hash.t option;
       (** the [dist.named] member hash, set by a recording run (EXP.2) so the name of a named choice
           reaches its root [sample] event; [None] keeps evaluation unchanged *)
-  mutable pending_choice : (string * Span.t option) option;
-      (** the name and call site of a [dist.named] application whose [sample] has not yet been
-          performed; taken (and cleared) by the next perform, which is that [sample] *)
+  mutable named_site : Span.t option;
+      (** the call site of the latest [dist.named] application, kept until the next perform (the
+          [sample] in its body) and cleared by any perform or a run that fails; the name itself is
+          read from the body's scope, so a site that outlives its application can name nothing *)
   mutable dispatching : int list;
       (** the calls whose root handlers are running, innermost first: trusted output belongs to the
           innermost *)
@@ -307,7 +308,7 @@ let make_ctx store =
     observing = false;
     next_call = 0;
     named_choice = None;
-    pending_choice = None;
+    named_site = None;
     dispatching = [];
     capture_ops = false;
     capture_root_handlers = false;
@@ -485,11 +486,11 @@ let with_observer ctx on_event body =
 let with_named_choices ctx named body =
   let previous = ctx.named_choice in
   ctx.named_choice <- named;
-  ctx.pending_choice <- None;
+  ctx.named_site <- None;
   Fun.protect
     ~finally:(fun () ->
       ctx.named_choice <- previous;
-      ctx.pending_choice <- None)
+      ctx.named_site <- None)
     body
 
 (* the run-transcript-v1 view of the typed stream: operation identities and trusted output bytes *)
@@ -1750,19 +1751,28 @@ let op_mode ctx op =
       op_mode
   | _ -> rt_type "hash %s is not an effect operation" (Hash.to_hex op)
 
+(* a scope is [dist.named]'s own when its definition group is exactly that member (EXP.2) *)
+let named_scope named (scope : Value.scope) =
+  Array.length scope.group = 1 && Hash.equal scope.group.(0) named
+
 (** Perform an operation: walk the continuation outward for the nearest matching handler (deep
     semantics; the captured resumption is inner frames + that handler frame); fall back to root
     handlers (grants); otherwise raise [Unhandled]. *)
-let perform_unchecked ?site ctx (op : Hash.t) ~name ~effect_ (args : Value.t list) (k : kont) :
-    state =
-  (* a pending named choice belongs to exactly this perform (the [sample] in [dist.named]'s body);
-     it names the event and replaces the prelude-internal site with the user's call site *)
+let perform_unchecked ?site ?caller ctx (op : Hash.t) ~name ~effect_ (args : Value.t list)
+    (k : kont) : state =
+  (* only the [sample] in [dist.named]'s body ([caller] is the scope of the application that
+     performs) is a named choice: its name is the body's [name] parameter, and its site is the
+     [dist.named] call when the evaluator knows it, else the [sample]'s own site *)
+  let call_site = ctx.named_site in
+  ctx.named_site <- None;
   let choice, site =
-    match ctx.pending_choice with
-    | None -> (None, site)
-    | Some (label, call_site) ->
-        ctx.pending_choice <- None;
-        (Some label, call_site)
+    match (ctx.named_choice, caller) with
+    | Some named, Some scope when Option.is_some ctx.root_observer && named_scope named scope -> (
+        match Env.find_opt "name" scope.env with
+        | Some { contents = VText label } ->
+            (Some label, match call_site with Some _ -> call_site | None -> site)
+        | _ -> (None, site))
+    | _ -> (None, site)
   in
   let rec split walked inner_rev = function
     | FHandle h :: outer when handler_covers h op ->
@@ -1824,20 +1834,13 @@ let perform_unchecked ?site ctx (op : Hash.t) ~name ~effect_ (args : Value.t lis
 
 (** Apply a function-position value to fully evaluated arguments (uncurried, decision D5): closures,
     builtins, constructors, ops (perform), and resumptions. *)
-let apply_unchecked ?site ctx (fn : Value.t) (args : Value.t list) (k : kont) : state =
+let apply_unchecked ?site ?caller ctx (fn : Value.t) (args : Value.t list) (k : kont) : state =
   let charge_frames frames =
     charge ctx (List.length frames);
     charge_alloc ctx (List.length frames)
   in
   match fn with
   | VClosure { scope; params; body } ->
-      (match (ctx.named_choice, args) with
-      | Some named, [ VText label; _ ]
-        when Option.is_some ctx.root_observer
-             && Array.length scope.group = 1
-             && Hash.equal scope.group.(0) named ->
-          ctx.pending_choice <- Some (label, site)
-      | _ -> ());
       if List.length params <> List.length args then
         rt_arity "closure of %d parameter(s) applied to %d argument(s)" (List.length params)
           (List.length args)
@@ -1847,6 +1850,13 @@ let apply_unchecked ?site ctx (fn : Value.t) (args : Value.t list) (k : kont) : 
           | Some env -> env
           | None -> rt (Runtime_err.Match_failure (Value.display (VTuple args)))
         in
+        (* the call site of a [dist.named] application, kept for the [sample] its body performs
+           next; set only once the application has succeeded, and even when unknown, so an
+           earlier site is never reused *)
+        (match ctx.named_choice with
+        | Some named when Option.is_some ctx.root_observer && named_scope named scope ->
+            ctx.named_site <- site
+        | _ -> ());
         SEval ({ scope with env }, body, k)
   | VBuiltin (_, native) as fn -> invoke_untrusted_native ctx fn native args k
   | VTrustedBuiltin builtin when String.equal (Trusted_builtin.name builtin) "async.scope-v0" -> (
@@ -1872,7 +1882,7 @@ let apply_unchecked ?site ctx (fn : Value.t) (args : Value.t list) (k : kont) : 
       else (
         charge_alloc ctx (1 + List.length args);
         SApply (VCon { con; name; args }, k))
-  | VOp { op; name; effect_ } -> perform_unchecked ?site ctx op ~name ~effect_ args k
+  | VOp { op; name; effect_ } -> perform_unchecked ?site ?caller ctx op ~name ~effect_ args k
   | VResume frames -> (
       match args with
       | [ v ] ->
@@ -2181,8 +2191,8 @@ and step_unchecked ctx (state : state) : state option =
       | FAppFn { args = a0 :: rest; scope; site } ->
           Some
             (SEval (scope, a0, FAppArgs { fn = v; done_rev = []; pending = rest; scope; site } :: k))
-      | FAppArgs { fn; done_rev; pending = []; scope = _; site } ->
-          Some (apply_unchecked ?site ctx fn (List.rev (v :: done_rev)) k)
+      | FAppArgs { fn; done_rev; pending = []; scope; site } ->
+          Some (apply_unchecked ?site ~caller:scope ctx fn (List.rev (v :: done_rev)) k)
       | FAppArgs { fn; done_rev; pending = e :: rest; scope; site } ->
           Some
             (SEval
@@ -2247,9 +2257,11 @@ and run_state_unchecked ctx state =
   | exception Fuel_meter.Exceeded ->
       (* a value walk (a native rendering or comparing) ran out inside this run *)
       ctx.deferring <- saved;
+      ctx.named_site <- None;
       exhaust ctx
   | exception exn ->
       ctx.deferring <- saved;
+      ctx.named_site <- None;
       raise exn
 
 (* every machine state visited costs one unit, the terminal one included, so an exhausted invocation

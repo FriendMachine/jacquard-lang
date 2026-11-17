@@ -88,7 +88,8 @@ it.
   $ jacquard model eval doc.model > /dev/null
   $ h=$(ls .jacquard/model-cache/history/*/r); truncate -s 70M "$h"
   $ sed -i 's/add(x, 1)/add(x, 2)/' m.jac
-  $ jacquard model eval doc.model 2>&1 | sed -E 's#[^ ]*/history/[0-9a-f]+/r#HISTORY#'
+  $ jacquard model eval doc.model > big.out 2>&1; echo "exit=$?"; sed -E 's#[^ ]*/history/[0-9a-f]+/r#HISTORY#' big.out
+  exit=0
   warning[W1802]: A model result's history could not be written.
     Cause: result r: the history HISTORY is larger than 67108864 bytes, so it is not extended
     Next step: Move that history file aside to start a new history for this result; the moved file keeps every earlier record, and the result itself is unaffected.
@@ -101,7 +102,7 @@ it.
   $ echo junk >> "$h"
   $ jacquard model explain doc.model
   r: history unavailable (bad frame; the next model eval keeps every record before the damage)
-  $ jacquard model eval doc.model > /dev/null 2>&1; jacquard model explain doc.model | sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/'
+  $ jacquard model eval doc.model > /dev/null 2>&1; jacquard model explain doc.model > fixed.out; sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/' fixed.out
   r: current (evaluated TIME)
   $ cd ..
 
@@ -118,7 +119,7 @@ recomputes rather than serving what this build stored.
   $ jacquard model eval doc.model
   r: cached
     value 2
-  $ ls .jacquard/model-cache/outcomes | grep -cE '^[0-9a-f]{64}$'
+  $ ls .jacquard/model-cache/outcomes > this-build; grep -cE '^[0-9a-f]{64}$' this-build
   1
   $ cp "$(command -v jacquard)" ./other-build && chmod u+w ./other-build && printf 'x' >> ./other-build
   $ ./other-build model eval doc.model
@@ -138,18 +139,20 @@ Cache files are never read through a symbolic link: an outcome that is a link
 is ignored with W1800 and replaced by a file; a history that is a link is
 refused and left as it is.
 
-  $ o=$(ls -d .jacquard/model-cache/outcomes/*/* | head -1); cp "$o" real; rm "$o"; ln -s "$PWD/real" "$o"
-  $ jacquard model eval doc.model 2>&1 | sed -E 's#[^ ]*/outcomes/[0-9a-f]+/[0-9a-f]+#OUTCOME#'
+  $ o=$(ls -d .jacquard/model-cache/outcomes/$(cat this-build)/*); cp "$o" real; rm "$o"; ln -s "$PWD/real" "$o"
+  $ jacquard model eval doc.model > link.out 2>&1; echo "exit=$?"; sed -E 's#[^ ]*/outcomes/[0-9a-f]+/[0-9a-f]+#OUTCOME#' link.out
+  exit=0
   warning[W1800]: A model cache file was ignored.
     Cause: OUTCOME: a symbolic link
     Next step: Nothing is needed: the result was recomputed and the file replaced.
   r: fresh
     value 2
-  $ o=$(ls -d .jacquard/model-cache/outcomes/*/* | head -1); test -L "$o" || echo "a file again"
+  $ test -L "$o" || echo "a file again"
   a file again
   $ h=$(ls .jacquard/model-cache/history/*/r); mv "$h" history.real; ln -s "$PWD/history.real" "$h"
   $ sed -i 's/add(x, 1)/add(x, 5)/' m.jac
-  $ jacquard model eval doc.model 2>&1 | grep -o 'W1802\|a symbolic link'
+  $ jacquard model eval doc.model > hlink.out 2>&1; echo "exit=$?"; grep -o 'W1802\|a symbolic link' hlink.out
+  exit=0
   W1802
   a symbolic link
   $ jacquard model explain doc.model

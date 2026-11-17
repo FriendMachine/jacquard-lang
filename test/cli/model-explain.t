@@ -1,0 +1,175 @@
+Follow-ups to `jacquard model explain` (docs/designs/model-dependencies.md §3.5).
+
+  $ export JACQUARD_PRELUDE=$PWD/../../prelude
+
+The closure manifest of a result whose declarations all load is unchanged:
+these bytes were taken from the binary before callee grouping, body diffs and
+the manifest's root check.
+
+  $ mkdir pin && cd pin
+  $ cat > m.jac <<'JAC'
+  > type Wrap = W Int
+  > inc(x) = add(x, 1)
+  > go(n) = match W(inc(n)) { | W(x) -> x }
+  > JAC
+  $ printf 'jacquard-model format=1\nsource m.jac\nresult g entry go args 1 driver run fuel=10000\n' > doc.model
+  $ jacquard model eval doc.model
+  g: fresh
+    value 2
+  $ m=$(grep '^entry-closure ' .jacquard/model-cache/history/*/g | cut -d' ' -f2); echo $m; cat ".jacquard/model-cache/snapshots/$m" | head -3; wc -l < ".jacquard/model-cache/snapshots/$m"
+  9d892f2b7d4ce4ee12f1085c1a5615162470af01938c5935a83c41a4c62ba728
+  jacquard-model-closure format=1
+  root b4e1e39c8f180a7d7b457b2d8a627df2af06b80f08f9f11e48f3da4b4d4ceda6
+  add term a73fc98649399549a6a9212901dc20df3ed6e765b316ced9bbf39f8fd83c03c0 ba2fefd45d8da8dee427855b668abf2287b0d8bda64f968e81b40e559cffd73c
+  10
+  $ cd ..
+
+A changed callee is named once per declaration, with its kind: aliases (two
+names bound to one declaration) and the members of a group or a type are one
+line, each name spelled as the surface spells it, followed by the readable
+`jacquard diff` of the two retained bodies.
+
+  $ mkdir callees && cd callees
+  $ cat > m.jac <<'JAC'
+  > type Wrap = W Int
+  > inc(x) = add(x, 1)
+  > bump(x) = add(x, 1)
+  > even(n) = if eq(n, 0) then True else odd(sub(n, 1))
+  > odd(n) = if eq(n, 0) then False else even(sub(n, 1))
+  > go(n) = match W(add(inc(n), bump(n))) { | W(x) -> if even(x) then x else 0 | _ -> 0 }
+  > JAC
+  $ printf 'jacquard-model format=1\nsource m.jac\nresult g entry go args 1 driver run fuel=100000\n' > doc.model
+  $ jacquard model eval doc.model
+  g: fresh
+    value 4
+  $ sed -i 's/add(x, 1)/add(x, 3)/; s/then True else/then eq(0, 0) else/' m.jac
+  $ cat m.jac
+  type Wrap = W Int
+  inc(x) = add(x, 3)
+  bump(x) = add(x, 3)
+  even(n) = if eq(n, 0) then eq(0, 0) else odd(sub(n, 1))
+  odd(n) = if eq(n, 0) then False else even(sub(n, 1))
+  go(n) = match W(add(inc(n), bump(n))) { | W(x) -> if even(x) then x else 0 | _ -> 0 }
+  $ jacquard model explain doc.model > a.out; sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/' a.out
+  g: stale (last evaluated TIME)
+    entry go changed
+    callee term bump, inc changed
+      body       1  ->  3
+    callee term even, odd changed
+      clause 1   True  ->  eq(0, 0)
+  $ jacquard model explain doc.model --json > a.json; grep -o '"names":\[[^]]*\]' a.json; grep -o '"diff":' a.json | wc -l
+  "names":[{"kind":"term","name":"bump"},{"kind":"term","name":"inc"}]
+  "names":[{"kind":"term","name":"even"},{"kind":"term","name":"odd"}]
+  2
+  $ jacquard model eval doc.model > /dev/null
+  $ printf 'type Wrap = W Int | V Int\n' > t.jac; sed -n '2,$p' m.jac >> t.jac; mv t.jac m.jac
+  $ jacquard model explain doc.model > b.out; sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/' b.out
+  g: stale (last evaluated TIME)
+    entry go changed
+    callee con V added
+    callee con W, type Wrap changed
+      definition  type Wrap = | W Int  ->  type Wrap = | W Int | V Int
+    last change (TIME):
+      entry go changed
+      callee term bump, inc changed
+        body       1  ->  3
+      callee term even, odd changed
+        clause 1   True  ->  eq(0, 0)
+  $ cd ..
+
+A history larger than 64 MiB is never read: evaluation leaves it untouched
+with W1802, whose next step says to move it aside, and explain says the same.
+A damaged history is unavailable to explain until the next evaluation repairs
+it.
+
+  $ mkdir large && cd large
+  $ printf 'f(x) = add(x, 1)\n' > m.jac
+  $ printf 'jacquard-model format=1\nsource m.jac\nresult r entry f args 1 driver run fuel=10000\n' > doc.model
+  $ jacquard model eval doc.model > /dev/null
+  $ h=$(ls .jacquard/model-cache/history/*/r); truncate -s 70M "$h"
+  $ sed -i 's/add(x, 1)/add(x, 2)/' m.jac
+  $ jacquard model eval doc.model 2>&1 | sed -E 's#[^ ]*/history/[0-9a-f]+/r#HISTORY#'
+  warning[W1802]: A model result's history could not be written.
+    Cause: result r: the history HISTORY is larger than 67108864 bytes, so it is not extended
+    Next step: Move that history file aside to start a new history for this result; the moved file keeps every earlier record, and the result itself is unaffected.
+  r: fresh
+    value 3
+  $ jacquard model explain doc.model
+  r: history unavailable (larger than 67108864 bytes; move it aside to start a new history for this result)
+  $ h=$(ls .jacquard/model-cache/history/*/r); mv "$h" r.old; jacquard model eval doc.model > /dev/null; grep -c '^entry bytes=' "$h"
+  1
+  $ echo junk >> "$h"
+  $ jacquard model explain doc.model
+  r: history unavailable (bad frame; the next model eval keeps every record before the damage)
+  $ jacquard model eval doc.model > /dev/null 2>&1; jacquard model explain doc.model | sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/'
+  r: current (evaluated TIME)
+  $ cd ..
+
+Outcomes are kept per build: the key names only the Core release, so another
+build of the same release (here, the same binary with one byte appended)
+recomputes rather than serving what this build stored.
+
+  $ mkdir builds && cd builds
+  $ printf 'f(x) = add(x, 1)\n' > m.jac
+  $ printf 'jacquard-model format=1\nsource m.jac\nresult r entry f args 1 driver run fuel=10000\n' > doc.model
+  $ jacquard model eval doc.model
+  r: fresh
+    value 2
+  $ jacquard model eval doc.model
+  r: cached
+    value 2
+  $ ls .jacquard/model-cache/outcomes | grep -cE '^[0-9a-f]{64}$'
+  1
+  $ cp "$(command -v jacquard)" ./other-build && chmod u+w ./other-build && printf 'x' >> ./other-build
+  $ ./other-build model eval doc.model
+  r: fresh
+    value 2
+  $ ./other-build model eval doc.model
+  r: cached
+    value 2
+  $ ls .jacquard/model-cache/outcomes | grep -cE '^[0-9a-f]{64}$'
+  2
+  $ jacquard model eval doc.model
+  r: cached
+    value 2
+  $ rm other-build
+
+Cache files are never read through a symbolic link: an outcome that is a link
+is ignored with W1800 and replaced by a file; a history that is a link is
+refused and left as it is.
+
+  $ o=$(ls -d .jacquard/model-cache/outcomes/*/* | head -1); cp "$o" real; rm "$o"; ln -s "$PWD/real" "$o"
+  $ jacquard model eval doc.model 2>&1 | sed -E 's#[^ ]*/outcomes/[0-9a-f]+/[0-9a-f]+#OUTCOME#'
+  warning[W1800]: A model cache file was ignored.
+    Cause: OUTCOME: a symbolic link
+    Next step: Nothing is needed: the result was recomputed and the file replaced.
+  r: fresh
+    value 2
+  $ o=$(ls -d .jacquard/model-cache/outcomes/*/* | head -1); test -L "$o" || echo "a file again"
+  a file again
+  $ h=$(ls .jacquard/model-cache/history/*/r); mv "$h" history.real; ln -s "$PWD/history.real" "$h"
+  $ sed -i 's/add(x, 1)/add(x, 5)/' m.jac
+  $ jacquard model eval doc.model 2>&1 | grep -o 'W1802\|a symbolic link'
+  W1802
+  a symbolic link
+  $ jacquard model explain doc.model
+  r: history unavailable (a symbolic link)
+  $ test -L "$h" && grep -c '^entry bytes=' history.real
+  1
+  $ cd ..
+
+Existing cache directories that others can reach are made owner-only; the
+cache directory itself, which `--cache` may name, is left as it is, and so is
+the outcomes directory of the other build, which this build never writes.
+
+  $ cd builds
+  $ chmod 755 .jacquard/model-cache .jacquard/model-cache/outcomes .jacquard/model-cache/outcomes/* .jacquard/model-cache/history .jacquard/model-cache/history/* .jacquard/model-cache/snapshots
+  $ jacquard model eval doc.model > /dev/null 2>&1
+  $ stat -c '%a %n' .jacquard/model-cache .jacquard/model-cache/outcomes .jacquard/model-cache/history .jacquard/model-cache/snapshots
+  755 .jacquard/model-cache
+  700 .jacquard/model-cache/outcomes
+  700 .jacquard/model-cache/history
+  700 .jacquard/model-cache/snapshots
+  $ stat -c %a .jacquard/model-cache/outcomes/* .jacquard/model-cache/history/* | sort -u
+  700
+  755

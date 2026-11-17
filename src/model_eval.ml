@@ -165,8 +165,8 @@ let parse bytes =
 type status = Fresh | Cached | Uncacheable of string | Refused of Diag.t list
 type evaluated = { name : string; key : Hash.t; status : status; outcome : outcome option }
 
-let warning ~code cause =
-  let summary, next_step =
+let warning ?next_step ~code cause =
+  let summary, default_next_step =
     match code with
     | "W1800" ->
         ( "A model cache file was ignored.",
@@ -182,6 +182,7 @@ let warning ~code cause =
           "Check that the cache directory is writable; the result itself is unaffected." )
     | _ -> raise (Diag.Bug_invalid_diagnostic ("unknown model cache code " ^ code))
   in
+  let next_step = Option.value next_step ~default:default_next_step in
   Diag.warning ~domain:Diag.Project ~code ~summary ~cause ~next_step ~contrast:None ()
 
 let refusal ~line ~name effects =
@@ -290,16 +291,98 @@ let run_one ~ctx ~allows ~seed ~out ~policy (r : Model_doc.resolved) =
 
 let max_cache_file = 64 * 1024 * 1024
 
+(* a cache file is read only when the path itself names a regular file: a symbolic link, or a
+   file swapped in between the check and the open, is refused *)
+let read_private ~limit path =
+  match Unix.lstat path with
+  | exception Unix.Unix_error (Unix.ENOENT, _, _) -> Error `Absent
+  | exception Unix.Unix_error (e, _, _) -> Error (`Unreadable (Unix.error_message e))
+  | { Unix.st_kind = Unix.S_LNK; _ } -> Error (`Unreadable "a symbolic link")
+  | { Unix.st_kind = Unix.S_REG; st_size; _ } when st_size > limit -> Error (`Too_large limit)
+  | { Unix.st_kind = Unix.S_REG; st_dev; st_ino; _ } -> (
+      match Unix.openfile path [ Unix.O_RDONLY; Unix.O_NONBLOCK; Unix.O_CLOEXEC ] 0 with
+      | exception Unix.Unix_error (Unix.ENOENT, _, _) -> Error `Absent
+      | exception Unix.Unix_error (e, _, _) -> Error (`Unreadable (Unix.error_message e))
+      | fd ->
+          Fun.protect
+            ~finally:(fun () -> try Unix.close fd with Unix.Unix_error _ -> ())
+            (fun () ->
+              match Unix.fstat fd with
+              | exception Unix.Unix_error (e, _, _) -> Error (`Unreadable (Unix.error_message e))
+              | { Unix.st_kind = Unix.S_REG; st_dev = d; st_ino = i; _ }
+                when d = st_dev && i = st_ino -> (
+                  let buf = Buffer.create 4096 and chunk = Bytes.create 65536 in
+                  let rec go () =
+                    if Buffer.length buf > limit then Error (`Too_large limit)
+                    else
+                      match Unix.read fd chunk 0 (Bytes.length chunk) with
+                      | 0 -> Ok (Buffer.contents buf)
+                      | n ->
+                          Buffer.add_subbytes buf chunk 0 n;
+                          go ()
+                  in
+                  try go ()
+                  with Unix.Unix_error (e, _, _) -> Error (`Unreadable (Unix.error_message e)))
+              | _ -> Error (`Unreadable "replaced while it was opened")))
+  | _ -> Error (`Unreadable "not a regular file")
+
 let read_cache path =
-  match Model_doc.read_bounded ~limit:max_cache_file path with
+  match read_private ~limit:max_cache_file path with
   | Ok bytes -> `Bytes bytes
   | Error `Absent -> `Absent
+  | Error (`Too_large limit) -> `Unreadable (Printf.sprintf "larger than %d bytes" limit)
   | Error (`Unreadable reason) -> `Unreadable reason
 
 let rec make_dirs dir =
   if not (Sys.file_exists dir) then (
     make_dirs (Filename.dirname dir);
     try Unix.mkdir dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
+
+(* directories under a cache root that this process has made private *)
+let private_done : (string, unit) Hashtbl.t = Hashtbl.create 8
+
+let private_dirs ~root parts =
+  let one dir =
+    if Hashtbl.mem private_done dir then Ok ()
+    else
+      match Unix.lstat dir with
+      | exception Unix.Unix_error (Unix.ENOENT, _, _) -> (
+          match Unix.mkdir dir 0o700 with
+          | () | (exception Unix.Unix_error (Unix.EEXIST, _, _)) ->
+              Hashtbl.replace private_done dir ();
+              Ok ()
+          | exception Unix.Unix_error (e, _, _) ->
+              Error (Printf.sprintf "%s: %s" dir (Unix.error_message e)))
+      | exception Unix.Unix_error (e, _, _) ->
+          Error (Printf.sprintf "%s: %s" dir (Unix.error_message e))
+      | { Unix.st_kind = Unix.S_DIR; st_perm; st_uid; _ } ->
+          (* an existing directory of ours that others can reach is tightened; one owned by
+             someone else is used as it is *)
+          (if st_perm land 0o077 <> 0 && st_uid = Unix.getuid () then
+             try Unix.chmod dir 0o700 with Unix.Unix_error _ -> ());
+          Hashtbl.replace private_done dir ();
+          Ok ()
+      | _ -> Error (Printf.sprintf "%s: not a directory" dir)
+  in
+  try
+    make_dirs root;
+    let rec go dir = function
+      | [] -> Ok ()
+      | p :: rest ->
+          let dir = Filename.concat dir p in
+          Result.bind (one dir) (fun () -> go dir rest)
+    in
+    go root parts
+  with (Unix.Unix_error _ | Sys_error _) as e -> Error (Printexc.to_string e)
+
+let build_identity =
+  lazy
+    (match Model_doc.read_bounded ~limit:max_int Sys.executable_name with
+    | Ok bytes ->
+        Some
+          (Hash.to_hex
+             (Hash.of_string ("jacquard-model-build-v1\000" ^ Version.version ^ "\000" ^ bytes)))
+    | Error _ -> None)
 
 let random = lazy (Random.State.make_self_init ())
 
@@ -340,11 +423,29 @@ let status_tag = function
   | Uncacheable reason -> "uncacheable-" ^ reason
   | Refused _ -> "refused"
 
-let evaluate ?(record = fun _ ~outcome:_ -> Ok None) ~ctx ~allows ~seed ~cache ~out
+type history_failure = { reason : string; next_step : string option }
+
+let evaluate ?(record = fun _ ~outcome:_ -> Ok None) ?build ~ctx ~allows ~seed ~cache ~out
     (prepared : Model_doc.prepared) =
   let warnings = ref [] in
-  let warn ~code cause = warnings := warning ~code cause :: !warnings in
+  let warn ?next_step ~code cause = warnings := warning ?next_step ~code cause :: !warnings in
   let granted = Frontend.granted_effects prepared.Model_doc.store allows in
+  (* outcomes are kept per build: a development build that changes evaluation without a version
+     change never serves what another build stored *)
+  let build =
+    lazy
+      (match build with
+      | Some b -> Some b
+      | None -> if allows = [] && cache <> None then Lazy.force build_identity else None)
+  in
+  (* an outcomes directory of ours that others can reach is tightened even when nothing is
+     written; a failure here surfaces at the first write *)
+  (match (cache, allows) with
+  | Some dir, [] -> (
+      match Lazy.force build with
+      | Some b -> ignore (private_dirs ~root:dir [ "outcomes"; b ])
+      | None -> ())
+  | _ -> ());
   let one (r : Model_doc.resolved) =
     let decl = r.Model_doc.decl in
     let name = decl.Model_doc.r_name in
@@ -362,14 +463,21 @@ let evaluate ?(record = fun _ ~outcome:_ -> Ok None) ~ctx ~allows ~seed ~cache ~
         outcome = None;
       }
     else
-      let path =
-        Option.map
-          (fun dir -> Filename.concat (Filename.concat dir "outcomes") (Hash.to_hex key))
-          cache
+      let place =
+        match cache with
+        | None -> `No_cache
+        | Some dir -> (
+            match Lazy.force build with
+            | Some build -> `Path (dir, build, Hash.to_hex key)
+            | None -> `No_build)
+      in
+      let path dir build key =
+        Filename.concat (Filename.concat (Filename.concat dir "outcomes") build) key
       in
       let served =
-        match (allows, path) with
-        | [], Some path -> (
+        match (allows, place) with
+        | [], `Path (dir, build, key) -> (
+            let path = path dir build key in
             match read_cache path with
             | `Absent -> None
             | `Unreadable reason ->
@@ -396,12 +504,18 @@ let evaluate ?(record = fun _ ~outcome:_ -> Ok None) ~ctx ~allows ~seed ~cache ~
           | Error ds -> { name; key; status = Refused ds; outcome = None }
           | Ok outcome ->
               let status =
-                match (uncacheable outcome, allows, path) with
+                match (uncacheable outcome, allows, place) with
                 | Some reason, _, _ -> Uncacheable reason
                 | None, _ :: _, _ -> Uncacheable "root-grants"
-                | None, [], None -> Uncacheable "no-cache"
-                | None, [], Some path -> (
-                    match write_atomic path (serialize dependency outcome) with
+                | None, [], `No_cache -> Uncacheable "no-cache"
+                | None, [], `No_build -> Uncacheable "no-build-identity"
+                | None, [], `Path (dir, build, key) -> (
+                    let path = path dir build key in
+                    match
+                      Result.bind
+                        (private_dirs ~root:dir [ "outcomes"; build ])
+                        (fun () -> write_atomic path (serialize dependency outcome))
+                    with
                     | Ok () -> Fresh
                     | Error reason ->
                         warn ~code:"W1801" (Printf.sprintf "%s: %s" path reason);
@@ -417,7 +531,8 @@ let evaluate ?(record = fun _ ~outcome:_ -> Ok None) ~ctx ~allows ~seed ~cache ~
             match record r ~outcome:(status_tag e.status ^ " " ^ outcome_tag outcome) with
             | Ok None -> ()
             | Ok (Some note) -> warn ~code:"W1803" (Printf.sprintf "result %s: %s" e.name note)
-            | Error reason -> warn ~code:"W1802" (Printf.sprintf "result %s: %s" e.name reason))
+            | Error { reason; next_step } ->
+                warn ?next_step ~code:"W1802" (Printf.sprintf "result %s: %s" e.name reason))
         | _ -> ());
         e)
       prepared.Model_doc.resolved

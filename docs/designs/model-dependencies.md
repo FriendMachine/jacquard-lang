@@ -236,15 +236,22 @@ reader accepts only canonical bytes holding a cacheable outcome.
 [--seed N] [--json]`:
 
 - The default cache is `.jacquard/model-cache/` beside the document. Each
-  outcome is stored as `outcomes/<key>`, written to an owner-only temporary file
-  and renamed; directories are created `0700`. A file whose record differs
-  from the result's, or that does not parse, is ignored with W1800 and
-  replaced; a failed write is W1801 and leaves the result uncacheable.
+  outcome is stored as `outcomes/<build>/<key>`, written to an owner-only
+  temporary file and renamed; directories are created `0700`, and an existing
+  `outcomes`, `history` or `snapshots` directory of the user's that others can
+  reach is made `0700` (the cache directory itself, which `--cache` may name,
+  is left as it is). `<build>` is HASH_V0 of the running executable and the
+  Core version, so an outcome is only served to the build that stored it; when
+  the executable cannot be read, nothing is served or stored
+  (`uncacheable (no-build-identity)`). A file whose record differs from the
+  result's, that does not parse, or that is a symbolic link is ignored with
+  W1800 and replaced (cache files are never read through a link); a failed
+  write is W1801 and leaves the result uncacheable.
 - Each result is printed as `NAME: fresh|cached|uncacheable (REASON)|refused`
   with its outcome. Reasons are `fuel`, `result-excluded` (the policy ignores
   the result), the opaque kind of an unsupported field (`closure`, `secret`,
-  ...), `truncated`, `missing`, `failure`, `root-grants`, `no-cache` and
-  `write-failed`; a field whose projection ran out of fuel reports `fuel`. A
+  ...), `truncated`, `missing`, `failure`, `root-grants`, `no-cache`,
+  `no-build-identity` and `write-failed`; a field whose projection ran out of fuel reports `fuel`. A
   `Secret` can only come from a root grant, and a granted document is never
   cached; a `Secret` value would also render as `unsupported`. The value is
   the data-v1 rendering, the same text whether fresh or cached.
@@ -257,10 +264,11 @@ reader accepts only canonical bytes holding a cacheable outcome.
 - `--json` prints one `jacquard-model-eval-v1` object on stdout: per result its
   name, key, status, reason or refusal diagnostics, and typed outcome. Output
   the program prints under `--allow console` then goes to stderr.
-- The key names the Core release (`core 0.3.0`). A development build that
-  changes evaluation without a version change can serve outcomes an earlier
-  build stored; clear the cache, or use `--no-cache`, when working on the
-  evaluator itself.
+- The key names the Core release (`core 0.3.0`); the build is not part of the
+  key, so a rebuilt binary does not make every result stale in `explain`.
+  Outcomes are instead kept per build (`outcomes/<build>/`), so a development
+  build that changes evaluation without a version change never serves an
+  outcome another build stored. Directories of earlier builds are not removed.
 - The exit status is 3 when a result is refused, else 2 when a result failed,
   was impossible, exhausted or numerically failed, or ran out of fuel, else 0.
   A document error exits 1 before anything runs.
@@ -334,9 +342,14 @@ guessed. Host 13 consumes `--json` of both commands.
   is not its own dependency record's, or whose bindings do not match its
   arguments, or whose input snapshot is not the input's identity, is
   malformed. A history with a malformed or torn frame keeps every record before
-  it and is rewritten atomically (W1803); one that cannot be read at all, or
-  that holds a record of another format version, is left untouched (W1802), as
-  is any failed write.
+  it and is rewritten atomically (W1803); one that cannot be read at all, that
+  is larger than 64 MiB, or that holds a record of another format version, is
+  left untouched (W1802), as is any failed write. Histories are never
+  compacted: W1802 for one larger than 64 MiB says to move the file aside,
+  which starts a new history for that result (the moved file keeps every
+  earlier record), and W1802 for another format names the version that wrote
+  it. A history, lock or snapshot path that is a symbolic link is refused,
+  never followed.
 - `snapshots/<hex>` holds each assumption's source text, each inline literal,
   each input's bytes and the canonical policy, named by their HASH_V0, written
   atomically when absent or when the file no longer holds its content, on every
@@ -351,7 +364,10 @@ guessed. Host 13 consumes `--json` of both commands.
   gone: ...)` when its key is unchanged but a snapshot its latest record names
   is missing (never assumed current), `stale (last evaluated T)` followed by
   every differing component and, when any, a `snapshots gone:` line, or
-  `history unavailable (REASON)`. Policies are compared by their identity in the
+  `history unavailable (REASON)`. `explain` never writes; the reason says what
+  to do: a damaged history is repaired by the next `model eval` (which keeps
+  every record before the damage), and one larger than 64 MiB can be moved
+  aside. Policies are compared by their identity in the
   dependency record; a policy snapshot that is present but is not that policy
   makes the history unavailable.
   When a result has an earlier record under another key, `last change (T):`
@@ -365,8 +381,10 @@ guessed. Host 13 consumes `--json` of both commands.
   renders as `(unavailable)`.
 - `--json` prints one `jacquard-model-explain-v1` object: per result its name,
   freshness, `evaluated_at`, the latest record's `outcome` and `previous` key,
-  `missing` snapshots, changes (each with `component`, `subject`, `before` and
-  `after`) and `last_transition`.
+  `missing` snapshots, `notes` when there are any, changes (each with
+  `component`, `subject`, `before` and `after`; a callee change also has
+  `names`, each `{kind, name}`, and `diff`, the rendered lines, when its bodies
+  are available) and `last_transition`.
 - Slice 3b: each record also names the entry's **closure manifest**, and a
   term argument's snapshot is its closure manifest. A manifest
   (`jacquard-model-closure format=1`) names, on its second line, `root
@@ -374,14 +392,23 @@ guessed. Host 13 consumes `--json` of both commands.
   declaration the term reaches as `NAME KIND DECL-HASH BODY-SNAPSHOT`: one line per (name,
   kind) bound to a member of it, or one `- -` line when nothing names it. Each
   declaration's stored bytes are retained as a snapshot (decision 5); a body
-  that cannot be read is written `none`. When the entry or a term argument
+  that cannot be read, or a stored declaration that cannot be loaded, is
+  written `none` (references that are not stored declarations, such as
+  builtins, are not listed). When the entry or a term argument
   changed, `explain` compares the two manifests by (name, kind), so a term and a
-  type sharing a name are both followed, and lists `callee NAME changed`,
-  `callee NAME added` or `callee NAME removed` for every named declaration
-  except the root's own declaration and its group siblings, found by that
-  identity (so a same-named type the entry reaches is still followed). Without both
+  type sharing a name are both followed, and lists `callee KIND NAME changed`,
+  `added` or `removed` for every named declaration except the root's own
+  declaration and its group siblings, found by that identity (so a same-named
+  type the entry reaches is still followed). Names bound to the same
+  declarations on both sides are one change, listed with their kinds as the
+  surface spells them: a declaration's aliases (`callee term bump, inc
+  changed`) and the members of a group or type (`callee type Wrap, con W
+  changed`). A changed callee whose two retained bodies are available is
+  followed by the readable `jacquard diff` of them, indented. Without both
   manifests (a pruned snapshot, or a record from before 3b, which has no
-  `entry-closure` line and still parses) only the change itself is named.
+  `entry-closure` line and still parses) only the change itself is named. A
+  manifest is read only when its header, `root` line and every line are well
+  formed.
 - A missing manifest, or a manifest whose retained bodies are not all readable,
   counts as a missing snapshot (`entry NAME`, `entry NAME declarations`, `term
   NAME declarations`), so such a result with an unchanged key is `unknown`.
@@ -391,9 +418,16 @@ guessed. Host 13 consumes `--json` of both commands.
   stored bytes and so the manifest). A refresh is appended only when it would
   name other snapshots than the latest record does: a body that cannot be
   retained at all (over 16 MiB stored) stays `none`, so the result stays
-  `unknown` without growing its history.
+  `unknown` without growing its history, and `explain` adds a `note:` naming
+  such declarations and the limit.
 - Owner decision (2026-10-28): naming the changed callees meets §3.5's
-  rendering; a `jac diff` of the retained bodies in `explain` is a follow-up.
+  rendering; a `jac diff` of the retained bodies in `explain` followed, as the
+  body diff under each changed callee.
+- Each process computes a closure manifest once per entry or term (against one
+  store state) and reads each declaration's stored bytes once; a snapshot it
+  already wrote or verified, and that is still the same file, is not read and
+  hashed again. Manifests are not cached across runs by declaration hash: the
+  names bound and the stored bytes are not determined by that hash.
 - `current (evaluated T)`, the JSON `outcome` and `previous` come from the
   first record under the latest key, so refresh records do not move them. The
   `after` side of a change renders the latest record's snapshot, which for a
@@ -420,6 +454,9 @@ guessed. Host 13 consumes `--json` of both commands.
 | a projection that is not entirely `data` | shown, `uncacheable <field kind>` |
 | a corrupt or foreign cache file | ignored and recomputed, with a warning; never trusted |
 | the Core version, engine, driver or fuel model changes | every key changes; nothing stale is served |
+| another build of the same Core version runs | keys are unchanged; outcomes are kept per build, so none another build stored is served |
+| a cache file is a symbolic link | never followed: an outcome is ignored with W1800, a history or snapshot is refused |
+| a history grows beyond 64 MiB | never compacted; W1802 says to move it aside to start a new one |
 
 ## 4. Compatibility
 

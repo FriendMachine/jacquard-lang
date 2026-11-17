@@ -188,8 +188,78 @@ let test_history_strict () =
     "an empty history is no records" true
     (Model_history.parse_history "" = Ok [])
 
+let hexs s = Hash.to_hex (Hash.of_string s)
+
+let test_parse_closure () =
+  let d = hexs "decl" and b = hexs "body" in
+  let header = "jacquard-model-closure format=1\n" in
+  let good = Printf.sprintf "%sroot %s\nf term %s %s\n- - %s none\n" header d d b b in
+  (match Model_history.parse_closure good with
+  | Some (root, [ (("f", "term"), d', b'); (("-", "-"), d'', "none") ]) ->
+      Alcotest.(check string) "root" d root;
+      Alcotest.(check (list string)) "hashes" [ d; b; b ] [ d'; b'; d'' ]
+  | _ -> Alcotest.fail "a well-formed manifest did not parse");
+  Alcotest.(check bool)
+    "a manifest without lines" true
+    (Model_history.parse_closure (Printf.sprintf "%sroot %s\n" header d) = Some (d, []));
+  let refused label text =
+    Alcotest.(check bool) label true (Model_history.parse_closure text = None)
+  in
+  refused "no root line" (Printf.sprintf "%sf term %s %s\n" header d b);
+  refused "a root that is not a hash" (Printf.sprintf "%sroot xyz\n" header);
+  refused "an uppercase root" (Printf.sprintf "%sroot %s\n" header (String.uppercase_ascii d));
+  refused "another header" (Printf.sprintf "jacquard-model-closure format=2\nroot %s\n" d);
+  refused "a short line" (Printf.sprintf "%sroot %s\nf term %s\n" header d d);
+  refused "an unknown kind" (Printf.sprintf "%sroot %s\nf thing %s %s\n" header d d b);
+  refused "a name without a kind" (Printf.sprintf "%sroot %s\nf - %s %s\n" header d d b);
+  refused "a body that is not a hash" (Printf.sprintf "%sroot %s\nf term %s nope\n" header d d);
+  refused "no final newline" (Printf.sprintf "%sroot %s\nf term %s %s" header d d b);
+  refused "a blank line" (Printf.sprintf "%sroot %s\n\nf term %s %s\n" header d d b)
+
+(* a stored declaration that cannot be loaded is listed with body none, not left out *)
+let test_closure_unloadable () =
+  let store =
+    match Store.open_store (Eval_support.fresh_dir ()) with
+    | Ok s -> s
+    | Error ds -> Eval_support.fail_diags "open_store" ds
+  in
+  let g =
+    Eval_support.put_src store (Store.names_view store) "(defterm ((binding g () (lit 1))))"
+  in
+  let f =
+    Eval_support.put_src store (Store.names_view store) "(defterm ((binding f () (var g))))"
+  in
+  let g_decl = Hash.to_hex g.Canon.decl_hash in
+  let line_of text =
+    match Model_history.parse_closure text with
+    | Some (_, lines) -> List.find_opt (fun ((n, _), _, _) -> n = "g") lines
+    | None -> Alcotest.fail "the manifest did not parse"
+  in
+  let before, bodies = Model_history.closure ~store (List.assoc "f" f.Canon.named) in
+  Alcotest.(check int) "both bodies retained" 2 (List.length bodies);
+  (match line_of before with
+  | Some (_, d, b) ->
+      Alcotest.(check string) "g's declaration" g_decl d;
+      Alcotest.(check bool) "g's body is retained" true (b <> "none")
+  | None -> Alcotest.fail "g is not listed");
+  (* a store whose object for g is gone: a fresh store state, so nothing is reused *)
+  let store' =
+    match Store.open_store store.Store.root with
+    | Ok s -> s
+    | Error ds -> Eval_support.fail_diags "reopen" ds
+  in
+  Sys.remove (Store.object_path store' g.Canon.decl_hash);
+  let after, _ = Model_history.closure ~store:store' (List.assoc "f" f.Canon.named) in
+  match line_of after with
+  | Some (_, d, b) ->
+      Alcotest.(check string) "g's declaration" g_decl d;
+      Alcotest.(check string) "g's body" "none" b
+  | None -> Alcotest.fail "an unloadable declaration was left out"
+
 let suite =
   [
+    Alcotest.test_case "model closure manifests parse strictly" `Quick test_parse_closure;
+    Alcotest.test_case "model closure lists unloadable declarations" `Quick test_closure_unloadable;
     Alcotest.test_case "model history round trip" `Quick test_history_round_trip;
     Alcotest.test_case "model history strict parse" `Quick test_history_strict;
     Alcotest.test_case "model history without closures" `Quick test_history_without_closure;

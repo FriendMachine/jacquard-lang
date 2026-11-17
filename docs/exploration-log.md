@@ -110,7 +110,8 @@ operation inside a prelude function (§2).
 - k counts every recorded draw under the name in the run, in step order. Under
   a native driver it keeps counting across the driver's runs: the same choice
   in its second weighted run has the next k, not 0 again. Every recorded draw
-  therefore has its own address.
+  under one name therefore has its own k (but see redaction below). Whether k
+  should instead restart in each branch of a driver is an open design choice.
 - Only the `sample` in `dist.named`'s body is named. An application that fails
   or runs out of fuel before its draw (a per-branch fuel cap can end it there
   and let the run continue) leaves nothing behind: the next operation keeps
@@ -121,8 +122,8 @@ operation inside a prelude function (§2).
   different names that redact to the same text are counted separately and can
   show the same `(name, k)`: after redaction the shown address need not be
   unique, and the counts show which redacted draws had the same original name.
-  Nothing reads the address yet; a fork engine that does (EXP.3) must refuse
-  an ambiguous one rather than pick a step.
+  Nothing reads the address yet; how a fork engine (EXP.3) should address
+  such a draw is an open question.
 - A handler that forwards the draw (`sample(d) resume k -> k(sample(d))`)
   performs a new, unnamed `sample`: the name belongs to the draw `dist.named`
   performed, which that handler caught, so the forwarded root step is unnamed.

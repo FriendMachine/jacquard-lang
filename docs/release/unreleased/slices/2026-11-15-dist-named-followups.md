@@ -38,5 +38,6 @@ visible. `test/test_exploration_log.ml` refuses near-miss `choice-name` and
 `argument` lines.
 
 Left for later: whether k should restart in each branch of an inference driver
-(which would repeat addresses within one log) is an open design choice, as is
-how a fork engine should address a redacted name.
+(which would repeat addresses within one log) is an open design choice; the
+current rule (k counts across branches) is pinned and would change with it. How
+a fork engine should address a redacted name is also open.

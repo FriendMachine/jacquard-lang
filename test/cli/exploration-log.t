@@ -329,8 +329,8 @@ addressed by its position. The output is the same as without --record.
   > 
   > add(roll(2), sample(UniformInt(1, 6)))
   > JAC
-  $ jacquard run dice.jac --allow dist --seed 3 > dice.plain
-  $ jacquard run dice.jac --allow dist --seed 3 --record dice.log > dice.recorded; cmp dice.recorded dice.plain && echo same
+  $ jacquard run dice.jac --allow dist --seed 3 > dice.plain || echo "exit=$?"
+  $ jacquard run dice.jac --allow dist --seed 3 --record dice.log > dice.recorded || echo "exit=$?"; cmp dice.recorded dice.plain && echo same
   same
   $ grep -A1 -E '^(step|choice-name)' dice.log | grep -v -E '^(--|name|site)' | cut -d' ' -f1-3
   step index=0 kind=choice
@@ -363,8 +363,8 @@ step and leaves no pending name behind for a later root draw.
   0
 
 A native driver (dist.sample-lw) captures its draws at the root, so they are
-steps; k counts draws under a name across all of its runs, so each draw of one
-recording has its own address.
+steps. As implemented, k counts draws under a name across all of its runs
+(it does not restart in each run).
 
   $ printf 'dist.sample-lw(fn () -> dist.named("c", Bernoulli(0.5)), 3, 7)\n' > lw-named.jac
   $ jacquard run lw-named.jac --seed 1 --record lw-named.log > /dev/null; echo "exit=$?"

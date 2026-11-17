@@ -636,8 +636,8 @@ reported before any result is evaluated.
 | E1805 | a result's entry is not an exported term of the source, or the entry does not check when applied to the result's arguments | `entry scale args note` where `scale` takes `Int` |
 | E1806 | `jacquard model eval`: a result's entry needs a root grant (for example `console`) that `--allow` did not give; the result is not run | `result greeted entry greet ...` where `greet` prints |
 | W1800 | a model cache file is unreadable, malformed, a symbolic link, or records another result; it is ignored, and the result is recomputed and stored again | an edited `outcomes/<build>/<key>` |
-| W1801 | a model result could not be written to the cache; the result is shown as `uncacheable (write-failed)` | a read-only cache directory |
-| W1802 | a model result's history record or snapshot could not be written, or the history could not be read at all, is larger than 64 MiB, or holds a record of another format, and was left untouched; the next step says what to do (move an oversized history aside to start a new one); the result itself is unaffected | a read-only `history/` directory |
+| W1801 | a model result could not be written to the cache, or a cache directory below the cache root is not a directory of its own (a symbolic link, say), so nothing is served from or stored in it; the result is shown as `uncacheable (write-failed)` | a read-only cache directory |
+| W1802 | a model result's history record or snapshot could not be written, or the history could not be read at all, is larger than 64 MiB, or holds a record of another format (named as `format=N`), and was left untouched; the next step says what to do (move an oversized history aside to start a new one; for another format, evaluate with the Jacquard version that wrote it or move the file aside); the result itself is unaffected | a read-only `history/` directory |
 | W1803 | a model result's history had a malformed or torn record; every record before it was kept and the history rewritten with the new record | an evaluation killed while appending |
 
 ## Appendix: the W5.3 audit (ten message rewrites)

@@ -65,10 +65,15 @@ val evaluate :
     E1806. With [allows] the named grants are installed for every result (seeded with [seed],
     printing through [out]) and nothing is read from or written to the cache. [cache], when present,
     is the cache directory: outcomes live under [outcomes/BUILD/KEY], where [BUILD] is [build] or,
-    by default, the HASH_V0 of the running executable and the Core version, so an outcome stored by
-    another build is never served; when the executable cannot be read nothing is served or stored
-    ([Uncacheable "no-build-identity"]). A stored outcome whose record matches is served; a corrupt
-    or foreign file, or a symbolic link, is ignored with W1800 and replaced; a failed write is W1801
+    by default, the HASH_V0 of the image this process is running (read through [/proc/self/exe], so
+    replacing or removing the file at the executable's path while it runs changes nothing) and the
+    Core version, so an outcome stored by another build is never served; where that image cannot be
+    read (no [/proc/self/exe], or an unreadable executable) nothing is served or stored
+    ([Uncacheable "no-build-identity"]). The identity covers the executable file only, not shared
+    libraries it loads. The [outcomes] and [outcomes/BUILD] directories are checked before anything
+    is read: when either is not a directory (a symbolic link, say), nothing is served from or stored
+    in it, and each write is W1801. A stored outcome whose record matches is served; a corrupt or
+    foreign file, or a symbolic link, is ignored with W1800 and replaced; a failed write is W1801
     and leaves the result [Uncacheable "write-failed"]. Files are created owner-only and written
     atomically, and the cache's [outcomes] directories are made owner-only when they are ours and
     are not. [record] is called for every result that has an outcome when [cache] is present and
@@ -86,7 +91,15 @@ val private_dirs : root:string -> string list -> (unit, string) result
     [root/p1/p2], ... named by [parts]: a missing one is created 0700, and an existing one owned by
     the current user that others can reach is made 0700. [root] itself is never changed, since it
     may be a directory the user named. A path that is not a directory (a symbolic link, say) is an
-    error. *)
+    error, and so is one replaced between the check and the change of its mode (the mode is changed
+    through the directory opened, never through a link). *)
+
+val check_dirs : root:string -> string list -> (unit, string) result
+(** [check_dirs ~root parts] checks, without creating or changing anything, that each existing
+    directory [root/p1], [root/p1/p2], ... named by [parts] is a directory itself rather than a
+    symbolic link or another kind of file; a missing one ends the check successfully (what lies
+    below it is absent). [root] itself is not checked. The check is by path: it is not atomic with a
+    later open. *)
 
 val make_dirs : string -> unit
 (** [make_dirs dir] creates [dir] and its missing parents with mode 0700. *)

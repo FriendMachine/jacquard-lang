@@ -60,14 +60,17 @@ val append :
     key, when the latest record names a snapshot that is gone and a refresh would name other
     snapshots. The read, the decision and the write hold an exclusive lock on a sibling [.lock]
     file. The [history] and [snapshots] directories are made owner-only. A cache path that is a
-    symbolic link is never followed: a history or lock is refused, and a snapshot is rewritten as a
-    file.
+    symbolic link is never followed: a history or lock is refused (a missing one is created
+    exclusively, and the file opened must be the one checked), a snapshot is rewritten as a file,
+    and a [history], [history/DOC] or [snapshots] directory that is not a directory of its own
+    refuses the record.
 
     [Ok None] is success; [Ok (Some note)] means a history with a damaged frame kept every record
     before it and was rewritten atomically, and the note says so. [Error failure] leaves the history
     untouched: it cannot be read at all, is larger than 64 MiB (the failure's next step says to move
-    it aside, since histories are never compacted), holds a record of another format (the next step
-    names the version that wrote it), or a write failed. *)
+    it aside, since histories are never compacted), holds a record of another format (the reason
+    names that format as [format=N], and the next step says to evaluate with the Jacquard version
+    that wrote it or to move the file aside), or a write failed. *)
 
 val closure : store:Store.t -> Hash.t -> string * (Hash.t * string) list
 (** [closure ~store term] is the closure manifest of [term] (see {!record.entry_closure}) and the
@@ -100,7 +103,9 @@ type change = {
           other members of its group or type are one change; empty otherwise *)
   diff : string list;
       (** for a changed callee whose two retained bodies are available, the readable [jacquard diff]
-          of them (regions, then [-]/[+] or [before -> after] lines); empty otherwise *)
+          of them (regions, then [-]/[+] or [before -> after] lines); each side names the
+          declarations retained in its own manifest, so a constructor of a type that changed since
+          is still named; empty otherwise *)
 }
 
 type freshness =
@@ -137,9 +142,12 @@ val explain : cache:string -> document:Hash.t -> Model_doc.prepared -> explanati
 (** [explain ~cache ~document prepared] compares each result's current dependency record, computed
     without evaluating, with its latest record (policies by identity), and that record with its
     predecessor. An assumption or input renders from its snapshots; a missing snapshot renders as
-    ["(unavailable)"]. It never writes: a history that cannot be used is [Unavailable], with a
-    reason that says what to do (a damaged one is repaired by the next [model eval]; one larger than
-    64 MiB can be moved aside). *)
+    ["(unavailable)"]. It never writes or creates anything: a history that cannot be used is
+    [Unavailable], with a reason that says what to do (a damaged one is repaired by the next
+    [model eval]; one larger than 64 MiB, or one holding a record of another format, named as
+    [format=N], can be moved aside). A history is never read through a [history] or [history/DOC]
+    directory that is a symbolic link (the result is [Unavailable]), nor a snapshot through such a
+    [snapshots] directory (the snapshot counts as gone). *)
 
 val render_text : explanation -> string list
 (** [render_text e] is the human rendering: a [RESULT: FRESHNESS] line, the stale changes (each

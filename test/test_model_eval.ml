@@ -256,10 +256,45 @@ let test_closure_unloadable () =
       Alcotest.(check string) "g's body" "none" b
   | None -> Alcotest.fail "an unloadable declaration was left out"
 
+(* a stored declaration whose bytes read but do not load is listed with body none, and its bytes
+   are not retained *)
+let test_closure_unparsable () =
+  let store =
+    match Store.open_store (Eval_support.fresh_dir ()) with
+    | Ok s -> s
+    | Error ds -> Eval_support.fail_diags "open_store" ds
+  in
+  let g =
+    Eval_support.put_src store (Store.names_view store) "(defterm ((binding g () (lit 2))))"
+  in
+  let f =
+    Eval_support.put_src store (Store.names_view store) "(defterm ((binding f () (var g))))"
+  in
+  let store' =
+    match Store.open_store store.Store.root with
+    | Ok s -> s
+    | Error ds -> Eval_support.fail_diags "reopen" ds
+  in
+  let path = Store.object_path store' g.Canon.decl_hash in
+  (try Unix.chmod path 0o600 with Unix.Unix_error _ -> ());
+  Out_channel.with_open_bin path (fun oc -> output_string oc "(not a declaration");
+  let text, bodies = Model_history.closure ~store:store' (List.assoc "f" f.Canon.named) in
+  (match Model_history.parse_closure text with
+  | Some (_, lines) -> (
+      match List.find_opt (fun ((n, _), _, _) -> n = "g") lines with
+      | Some (_, _, b) -> Alcotest.(check string) "g's body" "none" b
+      | None -> Alcotest.fail "an unparsable declaration was left out")
+  | None -> Alcotest.fail "the manifest did not parse");
+  Alcotest.(check int) "only f's body is retained" 1 (List.length bodies);
+  Alcotest.(check bool)
+    "the unparsable bytes are not retained" false
+    (List.exists (fun (_, b) -> b = "(not a declaration") bodies)
+
 let suite =
   [
     Alcotest.test_case "model closure manifests parse strictly" `Quick test_parse_closure;
     Alcotest.test_case "model closure lists unloadable declarations" `Quick test_closure_unloadable;
+    Alcotest.test_case "model closure lists unparsable declarations" `Quick test_closure_unparsable;
     Alcotest.test_case "model history round trip" `Quick test_history_round_trip;
     Alcotest.test_case "model history strict parse" `Quick test_history_strict;
     Alcotest.test_case "model history without closures" `Quick test_history_without_closure;

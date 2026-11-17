@@ -184,43 +184,60 @@ let history_path ~cache ~document name =
 
 let snapshot_path ~cache h = Filename.concat (Filename.concat cache "snapshots") (hex h)
 
-(* another format version: the marker followed by a complete version line other than 1 *)
+(* another format version: the marker followed by a complete version line other than 1; the
+   first such version *)
 let other_format bytes =
   let marker = "\njacquard-model-history format=" in
   let m = String.length marker and n = String.length bytes in
   let rec scan i =
-    if i + m > n then false
+    if i + m > n then None
     else if String.sub bytes i m = marker then
       match String.index_from_opt bytes (i + m) '\n' with
       | Some e ->
           let v = String.sub bytes (i + m) (e - i - m) in
-          (v <> "1" && v <> "" && String.for_all (fun c -> c >= '0' && c <= '9') v) || scan (i + 1)
-      | None -> false
+          if v <> "1" && v <> "" && String.for_all (fun c -> c >= '0' && c <= '9') v then Some v
+          else scan (i + 1)
+      | None -> None
     else scan (i + 1)
   in
   scan 0
 
-(* explain never writes: each reason says what the user, or the next evaluation, can do *)
+(* explain never writes: each reason says what the user, or the next evaluation, can do; a history
+   is never read through a directory that is not a directory of its own *)
 let read_history ~cache ~document name =
-  match Model_eval.read_private ~limit:history_limit (history_path ~cache ~document name) with
-  | Error `Absent -> Ok []
-  | Error (`Too_large limit) ->
-      Error
-        (Printf.sprintf "larger than %d bytes; move it aside to start a new history for this result"
-           limit)
-  | Error (`Unreadable reason) -> Error reason
-  | Ok bytes -> (
-      match parse_history bytes with
-      | Ok records -> Ok records
-      | Error _ when other_format bytes ->
-          Error "it holds a record of another format; it is left as it is"
-      | Error reason -> Error (reason ^ "; the next model eval keeps every record before the damage")
-      )
+  let read () =
+    match Model_eval.read_private ~limit:history_limit (history_path ~cache ~document name) with
+    | Error `Absent -> Ok []
+    | Error (`Too_large limit) ->
+        Error
+          (Printf.sprintf
+             "larger than %d bytes; move it aside to start a new history for this result" limit)
+    | Error (`Unreadable reason) -> Error reason
+    | Ok bytes -> (
+        match parse_history bytes with
+        | Ok records -> Ok records
+        | Error reason -> (
+            match other_format bytes with
+            | Some v ->
+                Error
+                  (Printf.sprintf
+                     "it holds a record of another format (format=%s), left as it is; evaluate \
+                      with the Jacquard version that wrote it, or move it aside to start a new \
+                      history for this result"
+                     v)
+            | None -> Error (reason ^ "; the next model eval keeps every record before the damage"))
+        )
+  in
+  Result.bind (Model_eval.check_dirs ~root:cache [ "history"; hex document ]) read
 
+(* a snapshot is never read through a [snapshots] directory that is not a directory of its own *)
 let read_snapshot ~cache h =
-  match Model_eval.read_private ~limit:retention_limit (snapshot_path ~cache h) with
-  | Ok bytes when Hash.equal (Hash.of_string bytes) h -> Some bytes
-  | _ -> None
+  match Model_eval.check_dirs ~root:cache [ "snapshots" ] with
+  | Error _ -> None
+  | Ok () -> (
+      match Model_eval.read_private ~limit:retention_limit (snapshot_path ~cache h) with
+      | Ok bytes when Hash.equal (Hash.of_string bytes) h -> Some bytes
+      | _ -> None)
 
 (* snapshots this process wrote or found intact, by path, with the file's identity then: one that
    is still the same file is not read and hashed again *)
@@ -262,30 +279,38 @@ let write_snapshot ~cache content =
         h)
       (Model_eval.write_atomic path content)
 
-(* the path must not be a symbolic link or anything but a regular file, before and after the open *)
-let not_regular path =
-  match Unix.lstat path with
-  | { Unix.st_kind = Unix.S_REG; _ } -> false
-  | _ -> true
-  | exception Unix.Unix_error (Unix.ENOENT, _, _) -> false
-
 let same_file fd path =
   match (Unix.fstat fd, Unix.lstat path) with
   | a, b ->
       a.Unix.st_kind = Unix.S_REG && a.Unix.st_dev = b.Unix.st_dev && a.Unix.st_ino = b.Unix.st_ino
+  | exception Unix.Unix_error _ -> false
+
+(* open the regular file at [path], creating it owner-only when absent: an absent file is created
+   exclusively (so a link swapped in is never followed to create its target), an existing one is
+   opened without creating, and either way the file opened must still be the one at [path] *)
+let open_regular path flags =
+  let flags = Unix.O_CLOEXEC :: Unix.O_NONBLOCK :: flags in
+  let opened =
+    match Unix.lstat path with
+    | { Unix.st_kind = Unix.S_REG; _ } -> Ok (Unix.openfile path flags 0)
+    | _ -> Error (path ^ ": not a regular file")
+    | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
+        Ok (Unix.openfile path (Unix.O_CREAT :: Unix.O_EXCL :: flags) 0o600)
+  in
+  Result.bind opened (fun fd ->
+      if same_file fd path then Ok fd
+      else (
+        (try Unix.close fd with Unix.Unix_error _ -> ());
+        Error (path ^ ": replaced while it was opened")))
 
 let append_frame path bytes =
   try
-    if not_regular path then Error (path ^ ": not a regular file")
-    else
-      let fd =
-        Unix.openfile path [ Unix.O_WRONLY; Unix.O_APPEND; Unix.O_CREAT; Unix.O_CLOEXEC ] 0o600
-      in
-      Fun.protect
-        ~finally:(fun () -> try Unix.close fd with Unix.Unix_error _ -> ())
-        (fun () ->
-          if not (same_file fd path) then Error (path ^ ": replaced while it was opened")
-          else (
+    match open_regular path [ Unix.O_WRONLY; Unix.O_APPEND ] with
+    | Error reason -> Error reason
+    | Ok fd ->
+        Fun.protect
+          ~finally:(fun () -> try Unix.close fd with Unix.Unix_error _ -> ())
+          (fun () ->
             (* a history another tool left readable by others is made owner-only *)
             if (Unix.fstat fd).Unix.st_perm land 0o077 <> 0 then Unix.fchmod fd 0o600;
             let frame = Printf.sprintf "entry bytes=%d\n%s\n" (String.length bytes) bytes in
@@ -295,7 +320,7 @@ let append_frame path bytes =
             in
             go 0;
             Unix.fsync fd;
-            Ok ()))
+            Ok ())
   with (Unix.Unix_error _ | Sys_error _) as e -> Error (Printexc.to_string e)
 
 let failure reason = { Model_eval.reason; next_step = None }
@@ -305,10 +330,7 @@ let plain r = Result.map_error failure r
    exclusive lock on a sibling lock file *)
 let with_lock path f =
   let lock = path ^ ".lock" in
-  match
-    if not_regular lock then Error (lock ^ ": not a regular file")
-    else Ok (Unix.openfile lock [ Unix.O_RDWR; Unix.O_CREAT; Unix.O_CLOEXEC ] 0o600)
-  with
+  match open_regular lock [ Unix.O_RDWR ] with
   | exception ((Unix.Unix_error _ | Sys_error _) as e) -> Error (failure (Printexc.to_string e))
   | Error reason -> Error (failure reason)
   | Ok fd ->
@@ -396,7 +418,7 @@ let closure ~(store : Store.t) root =
                 | Ok bytes -> (
                     match Store.load_object ~file:path bytes with
                     | Ok (decl, _) -> (Some bytes, Store.decl_refs decl)
-                    | Error _ -> (Some bytes, refs_of d))
+                    | Error _ -> (None, refs_of d))
                 | Error _ -> (None, refs_of d)
               in
               List.fold_left visit ((d, body) :: acc) refs)
@@ -494,19 +516,23 @@ let append ~cache ~document (prepared : Model_doc.prepared) (r : Model_doc.resol
           }
     | Error (`Unreadable reason) -> Error (failure reason)
     | Ok bytes -> (
-        match parse_prefix bytes with
-        | records, None -> Ok (records, None)
-        | _, Some _ when other_format bytes ->
+        match (parse_prefix bytes, lazy (other_format bytes)) with
+        | (records, None), _ -> Ok (records, None)
+        | (_, Some _), (lazy (Some v)) ->
             Error
               {
                 Model_eval.reason =
-                  "the history holds a record of another format; it was left untouched";
+                  Printf.sprintf
+                    "the history holds a record of another format (format=%s); it was left \
+                     untouched"
+                    v;
                 next_step =
                   Some
                     "Evaluate with the Jacquard version that wrote it, or move the history file \
                      aside to start a new one; the result itself is unaffected.";
               }
-        | records, Some (offset, reason) -> Ok (records, Some (String.sub bytes 0 offset, reason)))
+        | (records, Some (offset, reason)), _ ->
+            Ok (records, Some (String.sub bytes 0 offset, reason)))
   in
   (* snapshots are written, or repaired, on every evaluation, so pruning them never sticks *)
   let* bindings =
@@ -686,9 +712,19 @@ let surface_kind = function
   | "effect" -> Some Surface_name.Effect
   | _ -> None
 
-(* "term add, int.add" or "type Wrap, con W": each name as the surface spells it, after its kind
-   whenever the kind changes *)
+(* "term add, int.add" or "con W, type Wrap": each name as the surface spells it, after its kind
+   whenever the kind changes; kinds in the order [jacquard diff] ranks them, so they never
+   alternate *)
 let names_text names =
+  let rank = function
+    | "term" -> 0
+    | "con" -> 1
+    | "op" -> 2
+    | "type" -> 3
+    | "effect" -> 4
+    | _ -> 5
+  in
+  let names = List.stable_sort (fun (a, _) (b, _) -> compare (rank a) (rank b)) names in
   let rec go last = function
     | [] -> []
     | (kind, name) :: rest ->
@@ -699,14 +735,19 @@ let names_text names =
   in
   String.concat ", " (go None names)
 
+(* a retained body, parsed, when it is the declaration its manifest names *)
+let load_retained decl body =
+  match Store.load_object ~file:"(retained declaration)" body with
+  | Ok (d, hashes) when hex hashes.Canon.decl_hash = decl -> Some (d, hashes)
+  | _ -> None
+
 (* the readable [jacquard diff] of two retained bodies of one declaration, without its heading;
-   empty when either body is not the declaration its manifest names *)
-let body_diff ~(store : Store.t) ~label (old_decl, old_body) (new_decl, new_body) =
-  let load decl body =
-    match Store.load_object ~file:"(retained declaration)" body with
-    | Ok (d, hashes) when hex hashes.Canon.decl_hash = decl -> Some (d, hashes)
-    | _ -> None
-  in
+   empty when either body is not the declaration its manifest names. Each side names its callee's
+   own members first, then the declarations retained in its own manifest that the current store no
+   longer holds ([old_context], [new_context]), then whatever the current store names *)
+let body_diff ~(store : Store.t) ~label ~old_context ~new_context (old_decl, old_body)
+    (new_decl, new_body) =
+  let load = load_retained in
   match (load old_decl old_body, load new_decl new_body) with
   | Some ((od, _) as o), Some ((nd, _) as n) -> (
       let effect_name_of h =
@@ -721,10 +762,10 @@ let body_diff ~(store : Store.t) ~label (old_decl, old_body) (new_decl, new_body
         Diff.form_divergences ~syntax:Diff.Surface ~effect_name_of ~path:label
           (Kernel.decl_to_form od) (Kernel.decl_to_form nd)
       in
-      (* each side names its own members first, then whatever the current store names *)
       match
-        Diff.render_readable ~old_side:(Diff.source_side store [ o ])
-          ~new_side:(Diff.source_side store [ n ])
+        Diff.render_readable
+          ~old_side:(Diff.source_side store (Lazy.force old_context @ [ o ]))
+          ~new_side:(Diff.source_side store (Lazy.force new_context @ [ n ]))
           [ (label, Diff.Changed { divergences; dependents = []; origin = None }) ]
       with
       | Some text -> ( match String.split_on_char '\n' text with _ :: rest -> rest | [] -> [])
@@ -758,6 +799,23 @@ let differences ~store old_ now_ =
           t
         in
         let ot = table o and nt = table n in
+        (* every declaration retained in a side's manifest that the current store no longer
+           holds, parsed once and only when a body diff needs it; one the store holds is named by
+           the store, as [jacquard diff] names it *)
+        let retained side m =
+          lazy
+            (let seen = Hashtbl.create 16 in
+             let held = (closure_tables store).owner in
+             List.filter_map
+               (fun (_, d, b) ->
+                 if Hashtbl.mem seen d || Hashtbl.mem held d then None
+                 else (
+                   Hashtbl.add seen d ();
+                   Option.bind (Hash.of_canonical_hex b) (fun h ->
+                       Option.bind (side.content h) (load_retained d))))
+               m)
+        in
+        let old_context = retained old_ o and new_context = retained now_ n in
         let decls t key =
           List.sort_uniq compare (Option.value (Hashtbl.find_opt t key) ~default:[])
         in
@@ -808,7 +866,8 @@ let differences ~store old_ now_ =
             | [ x ], [ y ] ->
                 let diff =
                   match (body old_ x, body now_ y) with
-                  | Some x, Some y -> body_diff ~store ~label:(names_text names) x y
+                  | Some x, Some y ->
+                      body_diff ~store ~label:(names_text names) ~old_context ~new_context x y
                   | _ -> []
                 in
                 change ~subject ~names ~diff "callee"

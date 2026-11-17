@@ -339,11 +339,14 @@ Evaluating again restores the snapshots, so the unchanged result is current.
   scaled: history unavailable (a record's policy snapshot is not its policy)
   $ for h in .jacquard/model-cache/history/*/scaled; do cp scaled.bak "$h"; done
   $ for h in .jacquard/model-cache/history/*/echoed; do printf 'entry bytes=36\njacquard-model-history format=2\nnew\n\n' > "$h"; cp "$h" newer.bak; done
-  $ jacquard model eval doc.model > /dev/null 2> newer.err; grep -o 'W180[0-9]' newer.err; grep -o 'another format' newer.err
-  W1802
-  another format
+  $ jacquard model eval doc.model > /dev/null 2> newer.err; cat newer.err
+  warning[W1802]: A model result's history could not be written.
+    Cause: result echoed: the history holds a record of another format (format=2); it was left untouched
+    Next step: Evaluate with the Jacquard version that wrote it, or move the history file aside to start a new one; the result itself is unaffected.
   $ for h in .jacquard/model-cache/history/*/echoed; do cmp "$h" newer.bak && echo untouched; done
   untouched
+  $ jacquard model explain doc.model echoed
+  echoed: history unavailable (it holds a record of another format (format=2), left as it is; evaluate with the Jacquard version that wrote it, or move it aside to start a new history for this result)
   $ jacquard model explain doc.model --json > e.json; grep -o '"freshness":"[a-z-]*"' e.json
   "freshness":"current"
   "freshness":"history-unavailable"

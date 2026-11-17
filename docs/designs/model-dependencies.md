@@ -240,13 +240,22 @@ reader accepts only canonical bytes holding a cacheable outcome.
   temporary file and renamed; directories are created `0700`, and an existing
   `outcomes`, `history` or `snapshots` directory of the user's that others can
   reach is made `0700` (the cache directory itself, which `--cache` may name,
-  is left as it is). `<build>` is HASH_V0 of the running executable and the
-  Core version, so an outcome is only served to the build that stored it; when
-  the executable cannot be read, nothing is served or stored
-  (`uncacheable (no-build-identity)`). A file whose record differs from the
-  result's, that does not parse, or that is a symbolic link is ignored with
-  W1800 and replaced (cache files are never read through a link); a failed
-  write is W1801 and leaves the result uncacheable.
+  is left as it is). `<build>` is HASH_V0 of the executable image the process
+  is running, read through `/proc/self/exe` (so replacing or removing the file
+  at the executable's path while it runs changes nothing), and the Core
+  version, so an outcome is only served to the build that stored it. The
+  identity covers the executable file, not shared libraries it loads. Where
+  that image cannot be read (a system without `/proc/self/exe`, or an
+  executable without read permission), nothing is served or stored
+  (`uncacheable (no-build-identity)`). The `outcomes` and `outcomes/<build>`
+  directories are checked before anything is read: when either is not a
+  directory of its own (a symbolic link, or a file), nothing is served from or
+  stored in it, and each result's write is W1801. A file whose record differs
+  from the result's, that does not parse, or that is a symbolic link is
+  ignored with W1800 and replaced; a failed write is W1801 and leaves the
+  result uncacheable. Below the cache directory, neither a cache file nor a
+  cache directory is read through a symbolic link (the cache directory itself
+  may be one); the checks are by path, made just before each open.
 - Each result is printed as `NAME: fresh|cached|uncacheable (REASON)|refused`
   with its outcome. Reasons are `fuel`, `result-excluded` (the policy ignores
   the result), the opaque kind of an unsupported field (`closure`, `secret`,
@@ -347,9 +356,15 @@ guessed. Host 13 consumes `--json` of both commands.
   left untouched (W1802), as is any failed write. Histories are never
   compacted: W1802 for one larger than 64 MiB says to move the file aside,
   which starts a new history for that result (the moved file keeps every
-  earlier record), and W1802 for another format names the version that wrote
-  it. A history, lock or snapshot path that is a symbolic link is refused,
-  never followed.
+  earlier record), and W1802 for another format names the format it found
+  (`format=N`) and says to evaluate with the Jacquard version that wrote it or
+  to move the file aside; `explain` says the same. A history, lock or snapshot
+  path that is a symbolic link is refused, never followed; a missing history or
+  lock is created exclusively, and the file opened must be the one checked. A
+  `history`, `history/<doc>` or `snapshots` directory that is a symbolic link
+  refuses the record (W1802); `explain` reads no history through such a
+  history directory (the history is unavailable) and no snapshot through such
+  a `snapshots` directory (the snapshot counts as gone), and creates nothing.
 - `snapshots/<hex>` holds each assumption's source text, each inline literal,
   each input's bytes and the canonical policy, named by their HASH_V0, written
   atomically when absent or when the file no longer holds its content, on every
@@ -403,8 +418,13 @@ guessed. Host 13 consumes `--json` of both commands.
   declarations on both sides are one change, listed with their kinds as the
   surface spells them: a declaration's aliases (`callee term bump, inc
   changed`) and the members of a group or type (`callee con W, type Wrap
-  changed`); the JSON `subject` holds the plain names (`bump, inc`). A changed callee whose two retained bodies are available is
-  followed by the readable `jacquard diff` of them, indented. Without both
+  changed`), kinds in the order `jacquard diff` ranks them; the JSON `subject`
+  holds the plain names (`bump, inc`). A changed callee whose two retained
+  bodies are available is followed by the readable `jacquard diff` of them,
+  indented: each side names the declarations retained in its own manifest
+  that the current store no longer holds (so the old body of a callee that
+  matches on a type which gained a variant still names its constructors), and
+  otherwise whatever the current store names. Without both
   manifests (a pruned snapshot, or a record from before 3b, which has no
   `entry-closure` line and still parses) only the change itself is named. A
   manifest is read only when its header, `root` line and every line are well
@@ -456,6 +476,8 @@ guessed. Host 13 consumes `--json` of both commands.
 | the Core version, engine, driver or fuel model changes | every key changes; nothing stale is served |
 | another build of the same Core version runs | keys are unchanged; outcomes are kept per build, so none another build stored is served |
 | a cache file is a symbolic link | never followed: an outcome is ignored with W1800, a history or snapshot is refused |
+| a cache directory below the cache root is a symbolic link | never read through: no outcome is served from or stored in it (W1801), no history record is written (W1802), and `explain` reads no history or snapshot through it |
+| the executable's file is replaced while it runs | the build identity is that of the running image, so outcomes are filed under the build that computed them |
 | a history grows beyond 64 MiB | never compacted; W1802 says to move it aside to start a new one |
 
 ## 4. Compatibility

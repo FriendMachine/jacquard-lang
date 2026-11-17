@@ -355,13 +355,31 @@ let private_dirs ~root parts =
               Error (Printf.sprintf "%s: %s" dir (Unix.error_message e)))
       | exception Unix.Unix_error (e, _, _) ->
           Error (Printf.sprintf "%s: %s" dir (Unix.error_message e))
-      | { Unix.st_kind = Unix.S_DIR; st_perm; st_uid; _ } ->
-          (* an existing directory of ours that others can reach is tightened; one owned by
-             someone else is used as it is *)
-          (if st_perm land 0o077 <> 0 && st_uid = Unix.getuid () then
-             try Unix.chmod dir 0o700 with Unix.Unix_error _ -> ());
-          Hashtbl.replace private_done dir ();
-          Ok ()
+      | { Unix.st_kind = Unix.S_DIR; st_perm; st_uid; st_dev; st_ino; _ } ->
+          (* an existing directory of ours that others can reach is tightened, through the
+             directory opened and found to be the one checked (a link swapped in meanwhile is
+             refused, never followed); one owned by someone else is used as it is *)
+          let tightened =
+            if st_perm land 0o077 = 0 || st_uid <> Unix.getuid () then Ok ()
+            else
+              match Unix.openfile dir [ Unix.O_RDONLY; Unix.O_NONBLOCK; Unix.O_CLOEXEC ] 0 with
+              | exception Unix.Unix_error _ -> Ok ()
+              | fd ->
+                  Fun.protect
+                    ~finally:(fun () -> try Unix.close fd with Unix.Unix_error _ -> ())
+                    (fun () ->
+                      match Unix.fstat fd with
+                      | { Unix.st_kind = Unix.S_DIR; st_dev = d; st_ino = i; _ }
+                        when d = st_dev && i = st_ino -> (
+                          try
+                            Unix.fchmod fd 0o700;
+                            Ok ()
+                          with Unix.Unix_error _ -> Ok ())
+                      | _ -> Error (Printf.sprintf "%s: replaced while it was checked" dir)
+                      | exception Unix.Unix_error (e, _, _) ->
+                          Error (Printf.sprintf "%s: %s" dir (Unix.error_message e)))
+          in
+          Result.map (fun () -> Hashtbl.replace private_done dir ()) tightened
       | _ -> Error (Printf.sprintf "%s: not a directory" dir)
   in
   try
@@ -375,9 +393,27 @@ let private_dirs ~root parts =
     go root parts
   with (Unix.Unix_error _ | Sys_error _) as e -> Error (Printexc.to_string e)
 
+let check_dirs ~root parts =
+  let rec go dir = function
+    | [] -> Ok ()
+    | p :: rest -> (
+        let dir = Filename.concat dir p in
+        match Unix.lstat dir with
+        | { Unix.st_kind = Unix.S_DIR; _ } -> go dir rest
+        | _ -> Error (Printf.sprintf "%s: not a directory" dir)
+        | exception Unix.Unix_error (Unix.ENOENT, _, _) -> Ok ()
+        | exception Unix.Unix_error (e, _, _) ->
+            Error (Printf.sprintf "%s: %s" dir (Unix.error_message e)))
+  in
+  go root parts
+
+(* the image the kernel is running, which stays readable through this path when the file at the
+   executable's path is replaced or removed; where there is no such path, there is no identity *)
+let running_image = "/proc/self/exe"
+
 let build_identity =
   lazy
-    (match Model_doc.read_bounded ~limit:max_int Sys.executable_name with
+    (match Model_doc.read_bounded ~limit:max_int running_image with
     | Ok bytes ->
         Some
           (Hash.to_hex
@@ -438,14 +474,17 @@ let evaluate ?(record = fun _ ~outcome:_ -> Ok None) ?build ~ctx ~allows ~seed ~
       | Some b -> Some b
       | None -> if allows = [] && cache <> None then Lazy.force build_identity else None)
   in
-  (* an outcomes directory of ours that others can reach is tightened even when nothing is
-     written; a failure here surfaces at the first write *)
-  (match (cache, allows) with
-  | Some dir, [] -> (
-      match Lazy.force build with
-      | Some b -> ignore (private_dirs ~root:dir [ "outcomes"; b ])
-      | None -> ())
-  | _ -> ());
+  (* the outcomes directories are checked (and an existing one of ours that others can reach is
+     tightened) before anything is read: when one is not a directory of its own, a symbolic link
+     say, nothing is served from it or stored in it, and the failure is W1801 at each write *)
+  let dirs =
+    match (cache, allows) with
+    | Some dir, [] -> (
+        match Lazy.force build with
+        | Some b -> private_dirs ~root:dir [ "outcomes"; b ]
+        | None -> Ok ())
+    | _ -> Ok ()
+  in
   let one (r : Model_doc.resolved) =
     let decl = r.Model_doc.decl in
     let name = decl.Model_doc.r_name in
@@ -475,8 +514,8 @@ let evaluate ?(record = fun _ ~outcome:_ -> Ok None) ?build ~ctx ~allows ~seed ~
         Filename.concat (Filename.concat (Filename.concat dir "outcomes") build) key
       in
       let served =
-        match (allows, place) with
-        | [], `Path (dir, build, key) -> (
+        match (allows, place, dirs) with
+        | [], `Path (dir, build, key), Ok () -> (
             let path = path dir build key in
             match read_cache path with
             | `Absent -> None
@@ -512,9 +551,7 @@ let evaluate ?(record = fun _ ~outcome:_ -> Ok None) ?build ~ctx ~allows ~seed ~
                 | None, [], `Path (dir, build, key) -> (
                     let path = path dir build key in
                     match
-                      Result.bind
-                        (private_dirs ~root:dir [ "outcomes"; build ])
-                        (fun () -> write_atomic path (serialize dependency outcome))
+                      Result.bind dirs (fun () -> write_atomic path (serialize dependency outcome))
                     with
                     | Ok () -> Fresh
                     | Error reason ->

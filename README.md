@@ -1,7 +1,7 @@
 # Jacquard
 
-[![CI](https://github.com/jbwinters/jacquard-lang/actions/workflows/ci.yml/badge.svg)](https://github.com/jbwinters/jacquard-lang/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/jbwinters/jacquard-lang?include_prereleases&sort=semver)](https://github.com/jbwinters/jacquard-lang/releases)
+[![CI](https://github.com/FriendMachine/jacquard-lang/actions/workflows/ci.yml/badge.svg)](https://github.com/FriendMachine/jacquard-lang/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/FriendMachine/jacquard-lang?include_prereleases&sort=semver)](https://github.com/FriendMachine/jacquard-lang/releases)
 
 Jacquard is a FriendMachine research project for running, reviewing, simulating,
 and trusting programs written by models and reviewed by people. Start with the
@@ -22,7 +22,7 @@ end but is a research prototype, not a production language;
 Install the 0.3 release without OCaml or opam:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jbwinters/jacquard-lang/jacquard-core-0.3.0/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/FriendMachine/jacquard-lang/jacquard-core-0.3.0/scripts/install.sh | sh
 ~/.local/bin/jac run ~/.local/share/jacquard/demos/basics/m1-fact.jac
 ```
 
@@ -272,7 +272,7 @@ diff: `- sub + add`. See `sh demos/tooling/repair.sh` for the full transcript.
 Most users do not need OCaml or opam. Install the reviewed 0.3 binary with:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jbwinters/jacquard-lang/jacquard-core-0.3.0/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/FriendMachine/jacquard-lang/jacquard-core-0.3.0/scripts/install.sh | sh
 ```
 
 The installer detects your OS and CPU, downloads the matching archive and
@@ -308,7 +308,7 @@ it and assembles related files in isolated scratch space.
 To install under a different user-owned prefix:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jbwinters/jacquard-lang/jacquard-core-0.3.0/scripts/install.sh \
+curl -fsSL https://raw.githubusercontent.com/FriendMachine/jacquard-lang/jacquard-core-0.3.0/scripts/install.sh \
   | JACQUARD_INSTALL_PREFIX="$HOME/.jacquard" sh
 ```
 
@@ -328,7 +328,7 @@ If you already have `opam` 2.5.x, start at the local switch step. If `opam`
 is already initialized on your machine, skip `opam init`.
 
 ```bash
-git clone https://github.com/jbwinters/jacquard-lang.git
+git clone https://github.com/FriendMachine/jacquard-lang.git
 cd jacquard-lang
 
 asdf plugin add opam https://github.com/asdf-community/asdf-opam.git
@@ -782,7 +782,7 @@ experimental serial carrier for that protocol, and
 adapters pin, with its evidence and limits in `docs/release/host-boundary/`;
 no stable ABI, adapter, or HTTP server ships in this repository. Host
 integrations live in the separate
-[jacquard-host](https://github.com/jbwinters/jacquard-host) repository. It
+[jacquard-host](https://github.com/FriendMachine/jacquard-host) repository. It
 contains independent Python, TypeScript, and Go adapters and SDKs. They share
 one pinned Core release (currently `jacquard-core-0.3.0`) and each replays the
 full conformance kit against it.

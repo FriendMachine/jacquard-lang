@@ -619,11 +619,11 @@ countdown that exercises loopification. `dune build @native-fuzz` runs
 sweeps. The "Native parity" CI job runs the runtime ASAN gate, the
 harness, the gauntlet leak battery, and the fuzz lane on every push;
 the DoD's two CI runs are on record: the harness green on main
-(https://github.com/jbwinters/jacquard-lang/actions/runs/28781079083)
+(https://github.com/FriendMachine/jacquard-lang/actions/runs/28781079083)
 and a deliberate add-as-sub emitter miscompile reddening BOTH the
 Native parity job and the dev gate's differential cram on a demo branch
 (PR #2, closed unmerged:
-https://github.com/jbwinters/jacquard-lang/actions/runs/28781145795).
+https://github.com/FriendMachine/jacquard-lang/actions/runs/28781145795).
 The 10k-case fuzz sweep before the merge found no divergence. Review
 hardening: the walk is a recursive find with a coverage floor (62),
 manifest lookups match the path field exactly, and every leg wears a

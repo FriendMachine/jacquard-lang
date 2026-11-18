@@ -35,7 +35,7 @@ prelude, demos, and the C runtime used by native builds. It does not require
 OCaml, opam, or Dune.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jbwinters/jacquard-lang/jacquard-core-0.3.0/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/FriendMachine/jacquard-lang/jacquard-core-0.3.0/scripts/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 jac --version
 jac run "$HOME/.local/share/jacquard/demos/basics/m1-fact.jac"
@@ -1118,7 +1118,7 @@ Do not invent new kernel forms for surface sugar.
   conformance kit under `spec/host-protocol-v0/kit/` with its evidence pack in
   `docs/release/host-boundary/`. Independent Python, TypeScript, and Go
   adapters in the separate
-  [jacquard-host](https://github.com/jbwinters/jacquard-host) repository share
+  [jacquard-host](https://github.com/FriendMachine/jacquard-host) repository share
   one pinned Core release and replay it in full. No stable foreign-host ABI,
   adapter, or HTTP server ships here.
   Internal evaluator-capture and host-readiness OCaml APIs are not supported

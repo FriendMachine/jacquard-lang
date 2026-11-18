@@ -253,7 +253,7 @@ fixtures, and language/runtime evidence. It may contain a tiny fake host used
 only to prove conformance.
 
 The separate, public
-[`jacquard-host`](https://github.com/jbwinters/jacquard-host) repository owns
+[`jacquard-host`](https://github.com/FriendMachine/jacquard-host) repository owns
 real adapters, sockets, persistence, the minimal serial HTTP integration, and
 the requirements report fed back to Core. Its adapters are independent Python,
 TypeScript, and Go implementations of this protocol, each with an SDK. They

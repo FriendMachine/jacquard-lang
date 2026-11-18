@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO=${JACQUARD_INSTALL_REPO:-jbwinters/jacquard-lang}
+REPO=${JACQUARD_INSTALL_REPO:-FriendMachine/jacquard-lang}
 VERSION=${JACQUARD_INSTALL_VERSION:-jacquard-core-0.3.0}
 PREFIX=${JACQUARD_INSTALL_PREFIX:-$HOME/.local}
 

@@ -47,8 +47,8 @@ sample, which goes to the root Dist grant: Dist stays in the row.
   > t()
   > EOF
   $ jacquard check enumerate.jac --print-sigs
-  t : forall a. () ->{Dist@task} List (Pair (TaskResult (TaskResult a)) Real)
-  _ : forall a. List (Pair (TaskResult (TaskResult a)) Real)
+  t : () ->{Dist@task} List (Pair (TaskResult (TaskResult Bool)) Real)
+  _ : List (Pair (TaskResult (TaskResult Bool)) Real)
   $ jacquard run enumerate.jac --seed 1
   error[E0814]: The program requires an effect that was not granted
     Cause: This program requires dist [uncertainty/none] — denote and condition finite possibilities, which is not granted (performed via `t`).
@@ -179,13 +179,13 @@ and an annotated caller can name it too.
   > t() = async.scope(fn () -> print("child\n"))
   > u : () ->{Console@task} TaskResult ()
   > u() = t()
-  > mixed : forall a. () ->{Dist@task, Console, Console@task} TaskResult a
+  > mixed : () ->{Dist@task, Console, Console@task} TaskResult Bool
   > mixed() = { print("p"); async.scope(fn () -> { print("c"); sample(Bernoulli(0.5)) }) }
   > EOF
   $ jacquard check spelled.jac --print-sigs
   t : () ->{Console@task} TaskResult ()
   u : () ->{Console@task} TaskResult ()
-  mixed : forall a. () ->{Dist@task, Console, Console@task} TaskResult a
+  mixed : () ->{Dist@task, Console, Console@task} TaskResult Bool
   $ jacquard fmt spelled.jac > spelled.fmt
   $ sed -n 1p spelled.fmt
   t : () ->{Console@task} TaskResult ()

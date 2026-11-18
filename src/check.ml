@@ -1074,8 +1074,12 @@ let check_decl_payload_storage ?meta ?(effectself = None) ~parameters ty =
   walk ty
 
 (* Constructor scheme: forall vars. (fields) ->{} T vars  (nullary: T vars). Field types are
-   declaration types: tyvars come from the decl header, self-references are the decl. *)
-let rec con_scheme ctx ?meta (h : Hash.t) : scheme =
+   declaration types: tyvars come from the decl header, self-references are the decl. At a
+   construction site ([`Construct], the default: expressions, host ingress) the frozen prelude
+   [Bernoulli] and [UniformInt] constructors get the element type their eliminators produce
+   ([Distribution Bool], [Distribution Int]; {!Distribution_contract}); a pattern ([`Pattern]) keeps
+   the declared [Distribution a], so a match learns nothing about [a]. *)
+let rec con_scheme ctx ?meta ?(site = `Construct) (h : Hash.t) : scheme =
   (* a capability exists only as its scope's token, registered or not (design §10 A2.1) *)
   if Instance_contract.is_private_carrier h then
     err ?meta ~code:"E0835" "a capability can only be obtained from its scoped combinator";
@@ -1098,11 +1102,25 @@ let rec con_scheme ctx ?meta (h : Hash.t) : scheme =
       let exact_vary_world =
         Relational_contract.is_vary_world_constructor ~type_hash:decl_hash ~constructor_hash:h
       in
+      let indexed_element =
+        match site with
+        | `Pattern -> None
+        | `Construct -> (
+            match
+              Distribution_contract.indexed_element ~type_hash:decl_hash ~constructor_hash:h
+            with
+            | Some Distribution_contract.Bool -> Some (prim Distribution_contract.bool_type)
+            | Some Distribution_contract.Int -> Some (prim ctx.p_int)
+            | None -> None)
+      in
       let vars =
         List.map
           (fun a ->
-            if exact_vary_world && String.equal a "body" then (a, TExactThunk (new_tvar inner))
-            else (a, new_tvar inner))
+            match indexed_element with
+            | Some element -> (a, element)
+            | None ->
+                if exact_vary_world && String.equal a "body" then (a, TExactThunk (new_tvar inner))
+                else (a, new_tvar inner))
           tvars
       in
       let result = TCon (decl_hash, List.map snd vars) in
@@ -1714,7 +1732,7 @@ let rec infer_pat ctx (p : Kernel.pat) : ty * (string * ty) list =
   | Kernel.PLit (Kernel.LReal _) -> (prim ctx.p_real, [])
   | Kernel.PLit (Kernel.LText _) -> (prim ctx.p_text, [])
   | Kernel.PCon (Kernel.Hashed h, ps) -> (
-      let s = con_scheme ctx ~meta h in
+      let s = con_scheme ctx ~meta ~site:`Pattern h in
       let con_ty = instantiate ~level:ctx.level s in
       match (repr con_ty, ps) with
       | TArrow (fields, _, result), ps ->

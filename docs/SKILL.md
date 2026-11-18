@@ -794,7 +794,9 @@ it does not install ambient authority.
 
 The prelude defines distribution values such as `Bernoulli(p)`,
 `Categorical(weighted-pairs)`, and `UniformInt(low, high)`. Models perform
-`sample` and `observe` through the `Dist` effect.
+`sample` and `observe` through the `Dist` effect. `Bernoulli(p)` is a
+`Distribution Bool` and `UniformInt(low, high)` a `Distribution Int`, so a draw
+from either is a `Bool` or an `Int`; using it at another type is a check error.
 
 ```jacquard doctest=skill-dist mode=check fixture=skill-dist.jac stdout=skill-dist.stdout stderr=empty exit=0
 coin-model : () ->{Dist} Bool

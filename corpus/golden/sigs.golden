@@ -28,7 +28,7 @@
 23-ring1.jqd:label-with-index : forall a. (List a) ->{} (List (Int, a), Int)
 24-ring2.jqd:csv-swap : (Text) ->{} Text
 24-ring2.jqd:index-of-names : (List Text) ->{} `type:map.t` Text Int
-24-ring2.jqd:die-posterior : forall a. (Int, Int) ->{} List (Pair a Real)
+24-ring2.jqd:die-posterior : (Int, Int) ->{} List (Pair Int Real)
 25-warp.jqd:fails-on-empty : forall a. (List a) ->{Check} ()
 25-warp.jqd:helper-with-open-row : () ->{Check} ()
 25-warp.jqd:sealed-case : Test

@@ -66,11 +66,11 @@ same bytes.
   $ stat -c %a .jacquard/model-cache .jacquard/model-cache/outcomes
   700
   700
-  $ stat -c %a .jacquard/model-cache/outcomes/* | sort -u
+  $ stat -c %a .jacquard/model-cache/outcomes/*/* | sort -u
   600
   $ jacquard model eval doc.model --cache other > /dev/null; echo "exit=$?"
   exit=2
-  $ for f in other/outcomes/*; do cmp "$f" ".jacquard/model-cache/outcomes/${f##*/}" || echo differs; done; ls other/outcomes | wc -l
+  $ for f in other/outcomes/*/*; do cmp "$f" ".jacquard/model-cache/${f#other/}" || echo differs; done; ls other/outcomes/* | wc -l
   6
 
 Each edit recomputes exactly the results that depend on it.
@@ -140,7 +140,7 @@ what depends on it.
 
 A corrupt cache file is ignored with a warning and replaced.
 
-  $ for f in .jacquard/model-cache/outcomes/*; do echo garbage > "$f"; done
+  $ for f in .jacquard/model-cache/outcomes/*/*; do echo garbage > "$f"; done
   $ jacquard model eval doc.model > corrupt.out 2> corrupt.err; grep -c W1800 corrupt.err; grep -c fresh corrupt.out
   6
   6
@@ -166,7 +166,7 @@ neither reads nor writes.
   plain: fresh
     value 5
   [2]
-  $ ls h/outcomes | wc -l
+  $ ls h/outcomes/* | wc -l
   1
   $ jacquard model eval hermetic.model --no-cache > nocache.out; grep plain nocache.out
   plain: uncacheable (no-cache)
@@ -279,7 +279,8 @@ changed at its last recomputation, from the cache's history and snapshots.
   $ jacquard model explain doc.model scaled > c.out; sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/' c.out
   scaled: stale (last evaluated TIME)
     entry scale changed
-    callee helper changed
+    callee term helper changed
+      body       2  ->  9
     fuel: 10000 -> 20000
     last change (TIME):
       assumption base: 3 -> 5
@@ -317,7 +318,7 @@ Evaluating again restores the snapshots, so the unchanged result is current.
       snapshots gone: assumption base, inline 4, policy, entry scale
   $ for h in .jacquard/model-cache/history/*/echoed; do echo junk >> "$h"; done
   $ jacquard model explain doc.model echoed
-  echoed: history unavailable (bad frame)
+  echoed: history unavailable (bad frame; the next model eval keeps every record before the damage)
   $ printf 'hello\n' > note.txt
   $ jacquard model eval doc.model > /dev/null 2> repair.err; grep -c W1803 repair.err; grep -o 'kept' repair.err
   1
@@ -338,11 +339,14 @@ Evaluating again restores the snapshots, so the unchanged result is current.
   scaled: history unavailable (a record's policy snapshot is not its policy)
   $ for h in .jacquard/model-cache/history/*/scaled; do cp scaled.bak "$h"; done
   $ for h in .jacquard/model-cache/history/*/echoed; do printf 'entry bytes=36\njacquard-model-history format=2\nnew\n\n' > "$h"; cp "$h" newer.bak; done
-  $ jacquard model eval doc.model > /dev/null 2> newer.err; grep -o 'W180[0-9]' newer.err; grep -o 'another format' newer.err
-  W1802
-  another format
+  $ jacquard model eval doc.model > /dev/null 2> newer.err; cat newer.err
+  warning[W1802]: A model result's history could not be written.
+    Cause: result echoed: the history holds a record of another format (format=2); it was left untouched
+    Next step: Evaluate with the Jacquard version that wrote it, or move the history file aside to start a new one; the result itself is unaffected.
   $ for h in .jacquard/model-cache/history/*/echoed; do cmp "$h" newer.bak && echo untouched; done
   untouched
+  $ jacquard model explain doc.model echoed
+  echoed: history unavailable (it holds a record of another format (format=2), left as it is; evaluate with the Jacquard version that wrote it, or move it aside to start a new history for this result)
   $ jacquard model explain doc.model --json > e.json; grep -o '"freshness":"[a-z-]*"' e.json
   "freshness":"current"
   "freshness":"history-unavailable"
@@ -399,16 +403,18 @@ argument, from the closure manifests the history retains.
   $ jacquard model explain doc.model > a.out; sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/' a.out
   r: stale (last evaluated TIME)
     term step changed
-    callee inc changed
+    callee term inc changed
+      body       1  ->  2
   $ jacquard model eval doc.model > /dev/null
   $ sed -i 's/^step(n) = inc(n)$/step(n) = dbl(inc(n))/' m.jac
   $ jacquard model explain doc.model > b.out; sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/' b.out
   r: stale (last evaluated TIME)
     term step changed
-    callee dbl added
+    callee term dbl added
     last change (TIME):
       term step changed
-      callee inc changed
+      callee term inc changed
+        body       1  ->  2
 
 Repeated evaluations of an unchanged result add no history, and the JSON of an
 unknown result names its missing snapshots once.
@@ -439,20 +445,22 @@ result unknown, and the next evaluation restores it.
   $ jacquard model explain doc.model > k.out; sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/' k.out
   g: stale (last evaluated TIME)
     entry go changed
-    callee wrap changed
+    callee term wrap changed
+      body       4  ->  5
   $ jacquard model eval doc.model > /dev/null
   $ m=$(grep '^entry-closure ' .jacquard/model-cache/history/*/g | tail -1 | cut -d' ' -f2); body=$(grep '^wrap term ' ".jacquard/model-cache/snapshots/$m" | cut -d' ' -f4); rm ".jacquard/model-cache/snapshots/$body"
   $ jacquard model explain doc.model > p.out; sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/' p.out
   g: unknown (snapshots gone: entry go declarations)
     last change (TIME):
       entry go changed
-      callee wrap changed
+      callee term wrap changed
   $ jacquard model eval doc.model > /dev/null
   $ jacquard model explain doc.model > r.out; sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/' r.out
   g: current (evaluated TIME)
     last change (TIME):
       entry go changed
-      callee wrap changed
+      callee term wrap changed
+        body       4  ->  5
 
 The entry's own declaration is found by identity, so a same-named type it
 reaches is still followed; and after a retained body is pruned, an edit that
@@ -466,7 +474,10 @@ result is current again.
   g: current (evaluated TIME)
     last change (TIME):
       entry go changed
-      callee wrap changed
+      callee term wrap changed
+        body       n  ->  m
+        body       n  ->  m
+        body       4  ->  5
   $ cd .. && mkdir root && cd root
   $ printf 'type Wrap = W Int\nwrap(n) = W(n)\n' > m.jac
   $ printf 'jacquard-model format=1\nsource m.jac\nresult w entry wrap args 1 driver run fuel=10000\n' > doc.model
@@ -475,9 +486,9 @@ result is current again.
   $ jacquard model explain doc.model > w.out; sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/' w.out
   w: stale (last evaluated TIME)
     entry wrap changed
-    callee v added
-    callee w changed
-    callee wrap changed
+    callee con V added
+    callee con W, type Wrap changed
+      definition  type Wrap = | W Int  ->  type Wrap = | W Int | V Int
     signature wrap changed
 
 A declaration whose stored body exceeds the retention limit cannot be
@@ -495,3 +506,4 @@ its history.
   1
   $ jacquard model explain doc.model > b.out; sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/' b.out
   b: unknown (snapshots gone: entry big declarations)
+    note: entry big declarations: big is stored in more than 16777216 bytes, the retention limit, so its body is never retained

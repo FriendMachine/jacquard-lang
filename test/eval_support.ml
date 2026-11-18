@@ -17,12 +17,31 @@ type harness = {
   bumps : int ref;  (** how many times the [bump] builtin ran *)
 }
 
+let rec remove_tree path =
+  match Unix.lstat path with
+  | { Unix.st_kind = Unix.S_DIR; _ } ->
+      Array.iter (fun name -> remove_tree (Filename.concat path name)) (Sys.readdir path);
+      Unix.rmdir path
+  | _ -> Sys.remove path
+  | exception Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+
+(* scratch stores live under TMPDIR (Filename.get_temp_dir_name) and are removed when the test
+   process that made them exits; a forked child leaves them to its parent *)
 let fresh_dir =
-  let n = ref 0 in
+  let n = ref 0 and made = ref [] and owner = Unix.getpid () in
+  at_exit (fun () ->
+      if Unix.getpid () = owner then
+        List.iter
+          (fun dir -> try remove_tree dir with Unix.Unix_error _ | Sys_error _ -> ())
+          !made);
   fun () ->
     incr n;
-    Filename.concat (Filename.get_temp_dir_name ())
-      (Printf.sprintf "jacquard-eval-test-%d-%d" (Unix.getpid ()) !n)
+    let dir =
+      Filename.concat (Filename.get_temp_dir_name ())
+        (Printf.sprintf "jacquard-eval-test-%d-%d" (Unix.getpid ()) !n)
+    in
+    made := dir :: !made;
+    dir
 
 let fail_diags what ds =
   Alcotest.failf "%s: %s" what (String.concat "; " (List.map Diag.to_string ds))

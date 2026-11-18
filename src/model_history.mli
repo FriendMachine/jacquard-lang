@@ -18,8 +18,13 @@ type record = {
   time : string;  (** UTC, [YYYY-MM-DDTHH:MM:SSZ] *)
   entry_name : string;
   entry_closure : Hash.t option;
-      (** the snapshot of the entry's closure manifest: every declaration it reaches, with the names
-          bound to it and a snapshot of its body *)
+      (** the snapshot of the entry's closure manifest ([jacquard-model-closure format=1]): a
+          [root DECL] line naming the entry's own declaration, then, sorted, one
+          [NAME KIND DECL BODY] line per (name, kind) bound to a member of each stored declaration
+          the entry reaches, or one [- - DECL BODY] line when nothing names it. [BODY] is the
+          snapshot of the declaration's stored bytes, or [none] when they cannot be read, exceed the
+          16 MiB retention limit, or the declaration cannot be loaded. [None] for records written
+          before closures existed, which carry no [entry-closure] line. *)
   key : Hash.t;
   previous : Hash.t option;  (** the key of the record before this one *)
   outcome : string;  (** the status and outcome tag, as [model eval] reported them *)
@@ -31,6 +36,8 @@ type record = {
 }
 
 val serialize_record : record -> string
+(** [serialize_record r] is the canonical bytes of one history record, without its [entry bytes=N]
+    frame; {!parse_history} accepts exactly these bytes. *)
 
 val parse_history : string -> (record list, string) result
 (** [parse_history bytes] reads a whole history file, oldest record first; any malformed or
@@ -43,27 +50,71 @@ val append :
   Model_doc.prepared ->
   Model_doc.resolved ->
   outcome:string ->
-  (string option, string) result
+  (string option, Model_eval.history_failure) result
 (** [append ~cache ~document prepared resolved ~outcome] writes the result's snapshots (owner-only,
     atomically): each assumption's text, inline literal and input, the policy, and the closure
     manifest and declaration bodies of the entry and of each term argument. A snapshot is written
-    when absent or no longer holding its content, on every call. A record is appended when the
+    when absent or no longer holding its content, on every call (one this process already wrote or
+    verified, and that is still the same file, is not read again). A record is appended when the
     result has no history, when its latest record has another key, or, as a refresh under the same
-    key, when the latest record names a snapshot that is gone. The read, the decision and the write
-    hold an exclusive lock on a sibling [.lock] file. A history with a damaged frame keeps every
-    record before it, is rewritten atomically, and the result carries a note saying so; a history
-    that cannot be read at all, or holds a record of another format, is left untouched and refused.
-*)
+    key, when the latest record names a snapshot that is gone and a refresh would name other
+    snapshots. The read, the decision and the write hold an exclusive lock on a sibling [.lock]
+    file. The [history] and [snapshots] directories are made owner-only. A cache path that is a
+    symbolic link is never followed: a history or lock is refused (a missing one is created
+    exclusively, and the file opened must be the one checked), a snapshot is rewritten as a file,
+    and a [history], [history/DOC] or [snapshots] directory that is not a directory of its own
+    refuses the record.
+
+    [Ok None] is success; [Ok (Some note)] means a history with a damaged frame kept every record
+    before it and was rewritten atomically, and the note says so. [Error failure] leaves the history
+    untouched: it cannot be read at all, is larger than 64 MiB (the failure's next step says to move
+    it aside, since histories are never compacted), holds a record of another format (the reason
+    names that format as [format=N], and the next step says to evaluate with the Jacquard version
+    that wrote it or to move the file aside), or a write failed. *)
+
+val open_regular :
+  ?before_create:(unit -> unit) -> string -> Unix.open_flag list -> (Unix.file_descr, string) result
+(** [open_regular path flags] opens the regular file at [path] with [flags] (plus close-on-exec and
+    non-blocking, so a FIFO never blocks), creating it owner-only when absent. A symbolic link (live
+    or dangling), a FIFO, a directory or any other kind of file is refused, never followed or
+    created through; an absent file is created exclusively, and the file opened must still be the
+    one at [path]. [before_create] runs between finding the file absent and creating it (a test
+    seam). May raise [Unix.Unix_error]. *)
+
+val closure : store:Store.t -> Hash.t -> string * (Hash.t * string) list
+(** [closure ~store term] is the closure manifest of [term] (see {!record.entry_closure}) and the
+    stored bytes of every declaration it lists, each with its HASH_V0. A stored declaration that
+    cannot be loaded is listed with body [none]; a reference that is not a stored declaration is not
+    listed. Computed once per term for one store state (the same index and names) in a process. *)
+
+val parse_closure : string -> (string * ((string * string) * string * string) list) option
+(** [parse_closure text] reads a closure manifest (see {!record.entry_closure}): its root
+    declaration's hex, and [((name, kind), decl, body)] per line, unnamed lines with name and kind
+    ["-"]. [None] unless the header, a [root] line with a canonical hash, and every line (a known
+    kind, canonical hashes, a body hash or [none]) are well formed. *)
 
 (** {1 Explanations} *)
 
 type change = {
   component : string;
-      (** ["entry"], ["signature"], ["labels"], ["prelude"], ["core"], ["driver"], ["fuel"],
-          ["policy"], ["arguments"], or an argument kind *)
-  subject : string option;  (** the entry, assumption, input or term name *)
+      (** ["entry"] (its implementation or name), ["signature"], ["labels"], ["prelude"], ["core"],
+          ["driver"], ["fuel"], ["policy"], ["arguments"] (the count), ["argument"] (an argument's
+          kind or name), an argument kind (["assumption"], ["inline"], ["input"], ["term"]) for a
+          changed value, or ["callee"] for a declaration a changed entry or term argument reaches *)
+  subject : string option;
+      (** the entry, assumption, input or term name; for a callee, its kernel names, such as
+          ["add, int.add"] (the text rendering spells them with their kinds, from [names], such as
+          ["term add, int.add"] or ["con W, type Wrap"]) *)
   before : string option;
-  after : string option;
+  after : string option;  (** for a callee, ["added"] or ["removed"], or [None] when it changed *)
+  names : (string * string) list;
+      (** for a callee, every (kind, kernel name) bound to the declaration: its aliases and the
+          other members of its group or type are one change; empty otherwise *)
+  diff : string list;
+      (** for a changed callee whose two retained bodies are available, the readable [jacquard diff]
+          of them (regions, then [-]/[+] or [before -> after] lines); each side names the
+          declarations retained in its own manifest, so a constructor of a type that changed since
+          is still named; empty otherwise *)
 }
 
 type freshness =
@@ -85,6 +136,9 @@ type explanation = {
   missing : string list;
       (** dependencies of the latest record whose snapshots are gone; always reported, and a result
           with an unchanged key and missing snapshots is [Unknown] *)
+  notes : string list;
+      (** why some of [missing] can never be restored: declarations whose stored bytes exceed the 16
+          MiB retention limit *)
   freshness : freshness;
   transition : (string * change list) option;
       (** the latest record against the last record with another key: the time of the first record
@@ -97,9 +151,19 @@ val explain : cache:string -> document:Hash.t -> Model_doc.prepared -> explanati
 (** [explain ~cache ~document prepared] compares each result's current dependency record, computed
     without evaluating, with its latest record (policies by identity), and that record with its
     predecessor. An assumption or input renders from its snapshots; a missing snapshot renders as
-    ["(unavailable)"]. *)
+    ["(unavailable)"]. It never writes or creates anything: a history that cannot be used is
+    [Unavailable], with a reason that says what to do (a damaged one is repaired by the next
+    [model eval]; one larger than 64 MiB, or one holding a record of another format, named as
+    [format=N], can be moved aside). A history is never read through a [history] or [history/DOC]
+    directory that is a symbolic link (the result is [Unavailable]), nor a snapshot through such a
+    [snapshots] directory (the snapshot counts as gone). *)
 
 val render_text : explanation -> string list
+(** [render_text e] is the human rendering: a [RESULT: FRESHNESS] line, the stale changes (each
+    callee followed by its body diff, indented), [snapshots gone:] and [note:] lines, then the last
+    change. *)
 
 val to_json : explanation list -> string
-(** The [jacquard-model-explain-v1] JSON object [{format, results}], on one line. *)
+(** The [jacquard-model-explain-v1] JSON object [{format, results}], on one line. A callee change
+    also carries [names] (each [{kind, name}]) and, when its retained bodies are available, [diff]
+    (the rendered lines); a result with notes carries [notes]. *)

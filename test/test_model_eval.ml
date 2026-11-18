@@ -188,8 +188,206 @@ let test_history_strict () =
     "an empty history is no records" true
     (Model_history.parse_history "" = Ok [])
 
+let hexs s = Hash.to_hex (Hash.of_string s)
+
+let test_parse_closure () =
+  let d = hexs "decl" and b = hexs "body" in
+  let header = "jacquard-model-closure format=1\n" in
+  let good = Printf.sprintf "%sroot %s\nf term %s %s\n- - %s none\n" header d d b b in
+  (match Model_history.parse_closure good with
+  | Some (root, [ (("f", "term"), d', b'); (("-", "-"), d'', "none") ]) ->
+      Alcotest.(check string) "root" d root;
+      Alcotest.(check (list string)) "hashes" [ d; b; b ] [ d'; b'; d'' ]
+  | _ -> Alcotest.fail "a well-formed manifest did not parse");
+  Alcotest.(check bool)
+    "a manifest without lines" true
+    (Model_history.parse_closure (Printf.sprintf "%sroot %s\n" header d) = Some (d, []));
+  let refused label text =
+    Alcotest.(check bool) label true (Model_history.parse_closure text = None)
+  in
+  refused "no root line" (Printf.sprintf "%sf term %s %s\n" header d b);
+  refused "a root that is not a hash" (Printf.sprintf "%sroot xyz\n" header);
+  refused "an uppercase root" (Printf.sprintf "%sroot %s\n" header (String.uppercase_ascii d));
+  refused "another header" (Printf.sprintf "jacquard-model-closure format=2\nroot %s\n" d);
+  refused "a short line" (Printf.sprintf "%sroot %s\nf term %s\n" header d d);
+  refused "an unknown kind" (Printf.sprintf "%sroot %s\nf thing %s %s\n" header d d b);
+  refused "a name without a kind" (Printf.sprintf "%sroot %s\nf - %s %s\n" header d d b);
+  refused "a body that is not a hash" (Printf.sprintf "%sroot %s\nf term %s nope\n" header d d);
+  refused "no final newline" (Printf.sprintf "%sroot %s\nf term %s %s" header d d b);
+  refused "a blank line" (Printf.sprintf "%sroot %s\n\nf term %s %s\n" header d d b)
+
+(* a stored declaration that cannot be loaded is listed with body none, not left out *)
+let test_closure_unloadable () =
+  let store =
+    match Store.open_store (Eval_support.fresh_dir ()) with
+    | Ok s -> s
+    | Error ds -> Eval_support.fail_diags "open_store" ds
+  in
+  let g =
+    Eval_support.put_src store (Store.names_view store) "(defterm ((binding g () (lit 1))))"
+  in
+  let f =
+    Eval_support.put_src store (Store.names_view store) "(defterm ((binding f () (var g))))"
+  in
+  let g_decl = Hash.to_hex g.Canon.decl_hash in
+  let line_of text =
+    match Model_history.parse_closure text with
+    | Some (_, lines) -> List.find_opt (fun ((n, _), _, _) -> n = "g") lines
+    | None -> Alcotest.fail "the manifest did not parse"
+  in
+  let before, bodies = Model_history.closure ~store (List.assoc "f" f.Canon.named) in
+  Alcotest.(check int) "both bodies retained" 2 (List.length bodies);
+  (match line_of before with
+  | Some (_, d, b) ->
+      Alcotest.(check string) "g's declaration" g_decl d;
+      Alcotest.(check bool) "g's body is retained" true (b <> "none")
+  | None -> Alcotest.fail "g is not listed");
+  (* a store whose object for g is gone: a fresh store state, so nothing is reused *)
+  let store' =
+    match Store.open_store store.Store.root with
+    | Ok s -> s
+    | Error ds -> Eval_support.fail_diags "reopen" ds
+  in
+  Sys.remove (Store.object_path store' g.Canon.decl_hash);
+  let after, _ = Model_history.closure ~store:store' (List.assoc "f" f.Canon.named) in
+  match line_of after with
+  | Some (_, d, b) ->
+      Alcotest.(check string) "g's declaration" g_decl d;
+      Alcotest.(check string) "g's body" "none" b
+  | None -> Alcotest.fail "an unloadable declaration was left out"
+
+(* a stored declaration whose bytes read but do not load is listed with body none, and its bytes
+   are not retained *)
+let test_closure_unparsable () =
+  let store =
+    match Store.open_store (Eval_support.fresh_dir ()) with
+    | Ok s -> s
+    | Error ds -> Eval_support.fail_diags "open_store" ds
+  in
+  let g =
+    Eval_support.put_src store (Store.names_view store) "(defterm ((binding g () (lit 2))))"
+  in
+  let f =
+    Eval_support.put_src store (Store.names_view store) "(defterm ((binding f () (var g))))"
+  in
+  let store' =
+    match Store.open_store store.Store.root with
+    | Ok s -> s
+    | Error ds -> Eval_support.fail_diags "reopen" ds
+  in
+  let path = Store.object_path store' g.Canon.decl_hash in
+  (try Unix.chmod path 0o600 with Unix.Unix_error _ -> ());
+  Out_channel.with_open_bin path (fun oc -> output_string oc "(not a declaration");
+  let text, bodies = Model_history.closure ~store:store' (List.assoc "f" f.Canon.named) in
+  (match Model_history.parse_closure text with
+  | Some (_, lines) -> (
+      match List.find_opt (fun ((n, _), _, _) -> n = "g") lines with
+      | Some (_, _, b) -> Alcotest.(check string) "g's body" "none" b
+      | None -> Alcotest.fail "an unparsable declaration was left out")
+  | None -> Alcotest.fail "the manifest did not parse");
+  Alcotest.(check int) "only f's body is retained" 1 (List.length bodies);
+  Alcotest.(check bool)
+    "the unparsable bytes are not retained" false
+    (List.exists (fun (_, b) -> b = "(not a declaration") bodies)
+
+(* a cache file is opened only when it is the regular file at its path: a link (live or dangling),
+   a FIFO and a directory are refused, without blocking, following or creating anything *)
+let test_open_regular_refusals () =
+  let dir = Eval_support.fresh_dir () in
+  Unix.mkdir dir 0o700;
+  let at name = Filename.concat dir name in
+  let refused what path =
+    match Model_history.open_regular path [ Unix.O_RDWR ] with
+    | Ok fd ->
+        Unix.close fd;
+        Alcotest.failf "%s was opened" what
+    | Error _ -> ()
+    | exception Unix.Unix_error _ -> ()
+  in
+  Out_channel.with_open_bin (at "target") (fun oc -> output_string oc "kept");
+  Unix.symlink (at "target") (at "live");
+  refused "a live link" (at "live");
+  Alcotest.(check string)
+    "the link's target is untouched" "kept"
+    (In_channel.with_open_bin (at "target") In_channel.input_all);
+  Unix.symlink (at "absent") (at "dangling");
+  refused "a dangling link" (at "dangling");
+  Alcotest.(check bool)
+    "a dangling link's target is not created" false
+    (Sys.file_exists (at "absent"));
+  Unix.mkfifo (at "fifo") 0o600;
+  refused "a FIFO" (at "fifo");
+  Unix.mkdir (at "dir") 0o700;
+  refused "a directory" (at "dir")
+
+(* two processes that both find a lock absent race to create it: the one that loses opens the file
+   the other created, and still refuses a link put there instead *)
+let test_open_regular_created_meanwhile () =
+  let dir = Eval_support.fresh_dir () in
+  Unix.mkdir dir 0o700;
+  let path = Filename.concat dir "r.lock" in
+  let create () = Out_channel.with_open_bin path ignore in
+  (match Model_history.open_regular ~before_create:create path [ Unix.O_RDWR ] with
+  | Ok fd ->
+      let same = (Unix.fstat fd).Unix.st_ino = (Unix.lstat path).Unix.st_ino in
+      Unix.close fd;
+      Alcotest.(check bool) "the file created meanwhile is opened" true same
+  | Error reason -> Alcotest.failf "refused: %s" reason
+  | exception Unix.Unix_error (e, _, _) -> Alcotest.failf "failed: %s" (Unix.error_message e));
+  let path = Filename.concat dir "s.lock" and target = Filename.concat dir "s.target" in
+  let plant () = Unix.symlink target path in
+  (match Model_history.open_regular ~before_create:plant path [ Unix.O_RDWR ] with
+  | Ok fd ->
+      Unix.close fd;
+      Alcotest.fail "a link put there meanwhile was opened"
+  | Error _ | (exception Unix.Unix_error _) -> ());
+  Alcotest.(check bool) "the link's target is not created" false (Sys.file_exists target)
+
+(* an existing directory of ours that the owner cannot read, but others can reach, is still made
+   owner-only *)
+let test_private_dirs_unreadable () =
+  let root = Eval_support.fresh_dir () in
+  Unix.mkdir root 0o700;
+  let dir = Filename.concat root "outcomes" in
+  Unix.mkdir dir 0o700;
+  Unix.chmod dir 0o377;
+  let result =
+    Fun.protect
+      ~finally:(fun () -> Unix.chmod dir 0o700)
+      (fun () ->
+        let r = Model_eval.private_dirs ~root [ "outcomes" ] in
+        (r, (Unix.lstat dir).Unix.st_perm))
+  in
+  match result with
+  | Ok (), mode -> Alcotest.(check int) "the directory is owner-only" 0o700 mode
+  | Error _, _ -> Alcotest.fail "the directory was refused"
+
+let test_loader_image () =
+  List.iter
+    (fun p -> Alcotest.(check bool) p true (Model_eval.loader_image p))
+    [
+      "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2";
+      "/lib/ld-linux-aarch64.so.1";
+      "/lib/ld-musl-x86_64.so.1";
+      "/lib/ld-2.31.so";
+      "/lib/ld.so";
+      "/lib64/ld64.so.2";
+    ];
+  List.iter
+    (fun p -> Alcotest.(check bool) p false (Model_eval.loader_image p))
+    [ "/usr/bin/jacquard"; "/w/_build/default/bin/main.exe"; "/w/jq (deleted)"; "/w/old-ld" ]
+
 let suite =
   [
+    Alcotest.test_case "model build identity: a loader has none" `Quick test_loader_image;
+    Alcotest.test_case "model cache open_regular refusals" `Quick test_open_regular_refusals;
+    Alcotest.test_case "model cache lock created meanwhile" `Quick
+      test_open_regular_created_meanwhile;
+    Alcotest.test_case "model cache tightens an unreadable directory" `Quick
+      test_private_dirs_unreadable;
+    Alcotest.test_case "model closure manifests parse strictly" `Quick test_parse_closure;
+    Alcotest.test_case "model closure lists unloadable declarations" `Quick test_closure_unloadable;
+    Alcotest.test_case "model closure lists unparsable declarations" `Quick test_closure_unparsable;
     Alcotest.test_case "model history round trip" `Quick test_history_round_trip;
     Alcotest.test_case "model history strict parse" `Quick test_history_strict;
     Alcotest.test_case "model history without closures" `Quick test_history_without_closure;

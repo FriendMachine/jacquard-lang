@@ -174,21 +174,93 @@ let parse_prefix bytes =
 let parse_history bytes =
   match parse_prefix bytes with records, None -> Ok records | _, Some (_, reason) -> Error reason
 
+(* a history longer than this is not read; a snapshot or retained body larger than this is not
+   retained *)
+let history_limit = 64 * 1024 * 1024
+let retention_limit = 16 * 1024 * 1024
+
 let history_path ~cache ~document name =
   Filename.concat (Filename.concat (Filename.concat cache "history") (hex document)) name
 
 let snapshot_path ~cache h = Filename.concat (Filename.concat cache "snapshots") (hex h)
 
-let read_history ~cache ~document name =
-  match Model_doc.read_bounded ~limit:(64 * 1024 * 1024) (history_path ~cache ~document name) with
-  | Error `Absent -> Ok []
-  | Error (`Unreadable reason) -> Error reason
-  | Ok bytes -> parse_history bytes
+(* another format version: the marker followed by a complete version line other than 1; the
+   first such version *)
+let other_format bytes =
+  let marker = "\njacquard-model-history format=" in
+  let m = String.length marker and n = String.length bytes in
+  let rec scan i =
+    if i + m > n then None
+    else if String.sub bytes i m = marker then
+      match String.index_from_opt bytes (i + m) '\n' with
+      | Some e ->
+          let v = String.sub bytes (i + m) (e - i - m) in
+          if v <> "1" && v <> "" && String.for_all (fun c -> c >= '0' && c <= '9') v then Some v
+          else scan (i + 1)
+      | None -> None
+    else scan (i + 1)
+  in
+  scan 0
 
+(* explain never writes: each reason says what the user, or the next evaluation, can do; a history
+   is never read through a directory that is not a directory of its own *)
+let read_history ~cache ~document name =
+  let read () =
+    match Model_eval.read_private ~limit:history_limit (history_path ~cache ~document name) with
+    | Error `Absent -> Ok []
+    | Error (`Too_large limit) ->
+        Error
+          (Printf.sprintf
+             "larger than %d bytes; move it aside to start a new history for this result" limit)
+    | Error (`Unreadable reason) -> Error reason
+    | Ok bytes -> (
+        match parse_history bytes with
+        | Ok records -> Ok records
+        | Error reason -> (
+            match other_format bytes with
+            | Some v ->
+                Error
+                  (Printf.sprintf
+                     "it holds a record of another format (format=%s), left as it is; evaluate \
+                      with the Jacquard version that wrote it, or move it aside to start a new \
+                      history for this result"
+                     v)
+            | None -> Error (reason ^ "; the next model eval keeps every record before the damage"))
+        )
+  in
+  Result.bind (Model_eval.check_dirs ~root:cache [ "history"; hex document ]) read
+
+(* a snapshot is never read through a [snapshots] directory that is not a directory of its own *)
 let read_snapshot ~cache h =
-  match Model_doc.read_bounded ~limit:(16 * 1024 * 1024) (snapshot_path ~cache h) with
-  | Ok bytes when Hash.equal (Hash.of_string bytes) h -> Some bytes
+  match Model_eval.check_dirs ~root:cache [ "snapshots" ] with
+  | Error _ -> None
+  | Ok () -> (
+      match Model_eval.read_private ~limit:retention_limit (snapshot_path ~cache h) with
+      | Ok bytes when Hash.equal (Hash.of_string bytes) h -> Some bytes
+      | _ -> None)
+
+(* snapshots this process wrote or found intact, by path, with the file's identity then: one that
+   is still the same file is not read and hashed again *)
+let intact : (string, int * int * float) Hashtbl.t = Hashtbl.create 256
+
+let file_stamp path =
+  match Unix.lstat path with
+  | { Unix.st_kind = Unix.S_REG; st_ino; st_size; st_mtime; _ } -> Some (st_ino, st_size, st_mtime)
   | _ -> None
+  | exception Unix.Unix_error _ -> None
+
+let remember path = Option.iter (Hashtbl.replace intact path) (file_stamp path)
+
+let snapshot_present ~cache h =
+  let path = snapshot_path ~cache h in
+  match file_stamp path with
+  | None -> false
+  | Some stamp when Hashtbl.find_opt intact path = Some stamp -> true
+  | Some _ ->
+      read_snapshot ~cache h <> None
+      &&
+      (remember path;
+       true)
 
 let now () =
   let t = Unix.gmtime (Unix.time ()) in
@@ -199,42 +271,83 @@ let write_snapshot ~cache content =
   let h = Hash.of_string content in
   let path = snapshot_path ~cache h in
   (* an existing snapshot is kept only when it still holds its content *)
-  if read_snapshot ~cache h <> None then Ok h
-  else Result.map (fun () -> h) (Model_eval.write_atomic path content)
+  if snapshot_present ~cache h then Ok h
+  else
+    Result.map
+      (fun () ->
+        remember path;
+        h)
+      (Model_eval.write_atomic path content)
+
+let same_file fd path =
+  match (Unix.fstat fd, Unix.lstat path) with
+  | a, b ->
+      a.Unix.st_kind = Unix.S_REG && a.Unix.st_dev = b.Unix.st_dev && a.Unix.st_ino = b.Unix.st_ino
+  | exception Unix.Unix_error _ -> false
+
+(* open the regular file at [path], creating it owner-only when absent: an absent file is created
+   exclusively (so a link swapped in is never followed to create its target), an existing one is
+   opened without creating, and either way the file opened must still be the one at [path]. When
+   another process creates the file between the check and the exclusive create (two first
+   evaluations at once), the file is checked again, once, and opened as an existing one. *)
+let open_regular ?(before_create = ignore) path flags =
+  let flags = Unix.O_CLOEXEC :: Unix.O_NONBLOCK :: flags in
+  let existing () =
+    match Unix.lstat path with
+    | { Unix.st_kind = Unix.S_REG; _ } -> Ok (Unix.openfile path flags 0)
+    | _ -> Error (path ^ ": not a regular file")
+  in
+  let opened =
+    match existing () with
+    | r -> r
+    | exception Unix.Unix_error (Unix.ENOENT, _, _) -> (
+        before_create ();
+        match Unix.openfile path (Unix.O_CREAT :: Unix.O_EXCL :: flags) 0o600 with
+        | fd -> Ok fd
+        | exception Unix.Unix_error (Unix.EEXIST, _, _) -> existing ())
+  in
+  Result.bind opened (fun fd ->
+      if same_file fd path then Ok fd
+      else (
+        (try Unix.close fd with Unix.Unix_error _ -> ());
+        Error (path ^ ": replaced while it was opened")))
 
 let append_frame path bytes =
   try
-    Model_eval.make_dirs (Filename.dirname path);
-    let fd =
-      Unix.openfile path [ Unix.O_WRONLY; Unix.O_APPEND; Unix.O_CREAT; Unix.O_CLOEXEC ] 0o600
-    in
-    Fun.protect
-      ~finally:(fun () -> try Unix.close fd with Unix.Unix_error _ -> ())
-      (fun () ->
-        let frame = Printf.sprintf "entry bytes=%d\n%s\n" (String.length bytes) bytes in
-        let b = Bytes.unsafe_of_string frame in
-        let rec go off =
-          if off < Bytes.length b then go (off + Unix.write fd b off (Bytes.length b - off))
-        in
-        go 0;
-        Unix.fsync fd);
-    Ok ()
+    match open_regular path [ Unix.O_WRONLY; Unix.O_APPEND ] with
+    | Error reason -> Error reason
+    | Ok fd ->
+        Fun.protect
+          ~finally:(fun () -> try Unix.close fd with Unix.Unix_error _ -> ())
+          (fun () ->
+            (* a history another tool left readable by others is made owner-only *)
+            if (Unix.fstat fd).Unix.st_perm land 0o077 <> 0 then Unix.fchmod fd 0o600;
+            let frame = Printf.sprintf "entry bytes=%d\n%s\n" (String.length bytes) bytes in
+            let b = Bytes.unsafe_of_string frame in
+            let rec go off =
+              if off < Bytes.length b then go (off + Unix.write fd b off (Bytes.length b - off))
+            in
+            go 0;
+            Unix.fsync fd;
+            Ok ())
   with (Unix.Unix_error _ | Sys_error _) as e -> Error (Printexc.to_string e)
+
+let failure reason = { Model_eval.reason; next_step = None }
+let plain r = Result.map_error failure r
 
 (* one writer at a time per history: the read, the decision and the write happen under an
    exclusive lock on a sibling lock file *)
 let with_lock path f =
-  match
-    Model_eval.make_dirs (Filename.dirname path);
-    Unix.openfile (path ^ ".lock") [ Unix.O_RDWR; Unix.O_CREAT; Unix.O_CLOEXEC ] 0o600
-  with
-  | exception ((Unix.Unix_error _ | Sys_error _) as e) -> Error (Printexc.to_string e)
-  | fd ->
+  let lock = path ^ ".lock" in
+  match open_regular lock [ Unix.O_RDWR ] with
+  | exception ((Unix.Unix_error _ | Sys_error _) as e) -> Error (failure (Printexc.to_string e))
+  | Error reason -> Error (failure reason)
+  | Ok fd ->
       Fun.protect
         ~finally:(fun () -> try Unix.close fd with Unix.Unix_error _ -> ())
         (fun () ->
           match Unix.lockf fd Unix.F_LOCK 0 with
-          | exception Unix.Unix_error (e, _, _) -> Error (Unix.error_message e)
+          | exception Unix.Unix_error (e, _, _) -> Error (failure (Unix.error_message e))
           | () -> f ())
 
 let kind_text = function
@@ -244,112 +357,191 @@ let kind_text = function
   | Resolve.KType -> "type"
   | Resolve.KEffect -> "effect"
 
-(* the closure manifest of a term: every declaration it reaches, one line per (name, kind) bound
-   to a member of it, or one unnamed line, each with a snapshot of its stored bytes ("none" when
-   they cannot be read), sorted; and the bodies to retain *)
+(* the owner and name tables of one store state, and the manifests computed against it: a store
+   whose index and names are the very same lists is the same state, so model eval and explain
+   resolve owners once and compute each closure once per process *)
+type closure_tables = {
+  owner : (string, Hash.t) Hashtbl.t;  (** any hash -> its declaration *)
+  names : (string, string * string) Hashtbl.t;  (** declaration -> (name, kind), every binding *)
+  manifests : (string, string * (Hash.t * string) list) Hashtbl.t;  (** root -> closure *)
+}
+
+let closure_memo :
+    (Store.t
+    * (Hash.t * (Hash.t * Store.role)) list
+    * (string * Resolve.entry) list
+    * closure_tables)
+    option
+    ref =
+  ref None
+
+let closure_tables (store : Store.t) =
+  match !closure_memo with
+  | Some (s, index, names, t)
+    when s == store && index == store.Store.index && names == Store.names store ->
+      t
+  | _ ->
+      let owner = Hashtbl.create 256 in
+      List.iter (fun (h, (d, _)) -> Hashtbl.replace owner (hex h) d) store.Store.index;
+      let names = Hashtbl.create 256 in
+      List.iter
+        (fun (name, (e : Resolve.entry)) ->
+          match Hashtbl.find_opt owner (hex e.Resolve.hash) with
+          | Some d -> Hashtbl.add names (hex d) (name, kind_text e.Resolve.kind)
+          | None -> ())
+        (Store.names store);
+      let t = { owner; names; manifests = Hashtbl.create 16 } in
+      closure_memo := Some (store, store.Store.index, Store.names store, t);
+      t
+
+(* the closure manifest of a term: every stored declaration it reaches, one line per (name, kind)
+   bound to a member of it, or one unnamed line, each with a snapshot of its stored bytes ("none"
+   when they cannot be read or exceed the retention limit), sorted; and the bodies to retain, with
+   their hashes. A stored declaration that cannot be loaded is listed with body "none" (its own
+   references are not followed); a reference that is not a stored declaration (a builtin) is not
+   listed. *)
 let closure ~(store : Store.t) root =
-  let owner = Hashtbl.create 256 in
-  List.iter (fun (h, (d, _)) -> Hashtbl.replace owner (hex h) d) store.Store.index;
-  let names = Hashtbl.create 256 in
-  List.iter
-    (fun (name, (e : Resolve.entry)) ->
-      match Hashtbl.find_opt owner (hex e.Resolve.hash) with
-      | Some d -> Hashtbl.add names (hex d) (name, kind_text e.Resolve.kind)
-      | None -> ())
-    (Store.names store);
-  let seen = Hashtbl.create 64 in
-  let rec visit acc h =
-    let d = match Hashtbl.find_opt owner (hex h) with Some d -> hex d | None -> hex h in
-    if Hashtbl.mem seen d then acc
-    else (
-      Hashtbl.add seen d ();
-      match Store.locate_internal store h with
-      | Error _ -> acc
-      | Ok l -> List.fold_left visit (l.Store.decl_hash :: acc) (Store.decl_refs l.Store.decl))
-  in
-  let decls = visit [] root in
-  let bodies =
-    List.map
-      (fun d ->
-        match Model_doc.read_bounded ~limit:(16 * 1024 * 1024) (Store.object_path store d) with
-        | Ok body -> (d, Some body)
-        | Error _ -> (d, None))
-      decls
-  in
-  let lines =
-    List.concat_map
-      (fun (d, body) ->
-        let b = match body with Some b -> hex (Hash.of_string b) | None -> "none" in
-        match Hashtbl.find_all names (hex d) with
-        | [] -> [ Printf.sprintf "- - %s %s" (hex d) b ]
-        | ns -> List.map (fun (n, k) -> Printf.sprintf "%s %s %s %s" n k (hex d) b) ns)
-      bodies
-    |> List.sort_uniq compare
-  in
-  let root_decl = match Hashtbl.find_opt owner (hex root) with Some d -> d | None -> root in
-  ( "jacquard-model-closure format=1\nroot " ^ hex root_decl ^ "\n"
-    ^ String.concat "" (List.map (fun l -> l ^ "\n") lines),
-    List.filter_map snd bodies )
+  let t = closure_tables store in
+  match Hashtbl.find_opt t.manifests (hex root) with
+  | Some m -> m
+  | None ->
+      let seen = Hashtbl.create 64 in
+      let refs_of d =
+        match Store.locate_internal store d with
+        | Ok l -> Store.decl_refs l.Store.decl
+        | Error _ -> []
+      in
+      let rec visit acc h =
+        let known = Hashtbl.find_opt t.owner (hex h) in
+        let d = match known with Some d -> d | None -> h in
+        if Hashtbl.mem seen (hex d) then acc
+        else (
+          Hashtbl.add seen (hex d) ();
+          match known with
+          | None -> acc
+          | Some _ ->
+              (* the stored bytes are read once: retained, hashed, and parsed for references *)
+              let path = Store.object_path store d in
+              let body, refs =
+                match Model_doc.read_bounded ~limit:retention_limit path with
+                | Ok bytes -> (
+                    match Store.load_object ~file:path bytes with
+                    | Ok (decl, _) -> (Some bytes, Store.decl_refs decl)
+                    | Error _ -> (None, refs_of d))
+                | Error _ -> (None, refs_of d)
+              in
+              List.fold_left visit ((d, body) :: acc) refs)
+      in
+      let bodies =
+        List.map
+          (fun (d, body) -> (d, Option.map (fun b -> (Hash.of_string b, b)) body))
+          (visit [] root)
+      in
+      let lines =
+        List.concat_map
+          (fun (d, body) ->
+            let b = match body with Some (h, _) -> hex h | None -> "none" in
+            match Hashtbl.find_all t.names (hex d) with
+            | [] -> [ Printf.sprintf "- - %s %s" (hex d) b ]
+            | ns -> List.map (fun (n, k) -> Printf.sprintf "%s %s %s %s" n k (hex d) b) ns)
+          bodies
+        |> List.sort_uniq compare
+      in
+      let root_decl = match Hashtbl.find_opt t.owner (hex root) with Some d -> d | None -> root in
+      let m =
+        ( "jacquard-model-closure format=1\nroot " ^ hex root_decl ^ "\n"
+          ^ String.concat "" (List.map (fun l -> l ^ "\n") lines),
+          List.filter_map snd bodies )
+      in
+      Hashtbl.replace t.manifests (hex root) m;
+      m
 
-(* the declaration the manifest's root belongs to *)
-let closure_root text =
-  match String.split_on_char '\n' text with
-  | "jacquard-model-closure format=1" :: r :: _ when String.starts_with ~prefix:"root " r ->
-      Some (String.sub r 5 (String.length r - 5))
-  | _ -> None
-
-(* ((name, kind), decl, body) per line; unnamed lines have name "-" *)
+(* a manifest: its root declaration, and ((name, kind), decl, body) per line, unnamed lines with
+   name and kind "-"; [None] unless every line is well formed *)
 let parse_closure text =
+  let is_hash s = Option.is_some (Hash.of_canonical_hex s) in
+  let kinds = [ "term"; "con"; "op"; "type"; "effect" ] in
   match String.split_on_char '\n' text with
-  | "jacquard-model-closure format=1" :: _ :: rest ->
-      Some
-        (List.filter_map
-           (fun l ->
-             match String.split_on_char ' ' l with
-             | [ n; k; d; b ] -> Some ((n, k), d, b)
-             | _ -> None)
-           rest)
+  | "jacquard-model-closure format=1" :: r :: rest
+    when String.starts_with ~prefix:"root " r && is_hash (String.sub r 5 (String.length r - 5)) ->
+      let rec lines acc = function
+        | [ "" ] -> Some (String.sub r 5 (String.length r - 5), List.rev acc)
+        | l :: rest -> (
+            match String.split_on_char ' ' l with
+            | [ n; k; d; b ]
+              when ((n = "-" && k = "-") || (n <> "-" && n <> "" && List.mem k kinds))
+                   && is_hash d
+                   && (b = "none" || is_hash b) ->
+                lines (((n, k), d, b) :: acc) rest
+            | _ -> None)
+        | [] -> None
+      in
+      lines [] rest
   | _ -> None
+
+(* the stored declarations of a manifest whose bodies were never retained because they are larger
+   than the retention limit, by name, judged from the current store *)
+let oversized ~(store : Store.t) text =
+  match parse_closure text with
+  | None -> []
+  | Some (_, lines) ->
+      List.filter_map
+        (fun ((n, _), d, b) ->
+          if b <> "none" then None
+          else
+            match Hash.of_canonical_hex d with
+            | None -> None
+            | Some d -> (
+                match Unix.stat (Store.object_path store d) with
+                | { Unix.st_size; _ } when st_size > retention_limit ->
+                    Some (if n = "-" then "#" ^ String.sub (hex d) 0 12 else n)
+                | _ -> None
+                | exception Unix.Unix_error _ -> None))
+        lines
+      |> List.sort_uniq compare
 
 let append ~cache ~document (prepared : Model_doc.prepared) (r : Model_doc.resolved) ~outcome =
   let name = r.Model_doc.decl.Model_doc.r_name in
   let path = history_path ~cache ~document name in
+  let* () = Model_eval.private_dirs ~root:cache [ "history"; hex document ] in
+  let* () = Model_eval.private_dirs ~root:cache [ "snapshots" ] in
   with_lock path @@ fun () ->
   let key = Model_doc.key r.Model_doc.dependency in
-  (* a damaged history keeps every record before the damage; an unreadable one is left alone *)
+  (* a damaged history keeps every record before the damage; an unreadable one, one too large to
+     read, and one holding another format are left alone *)
   let* history, damage =
-    match Model_doc.read_bounded ~limit:(64 * 1024 * 1024) path with
+    match Model_eval.read_private ~limit:history_limit path with
     | Error `Absent -> Ok ([], None)
-    | Error (`Unreadable reason) -> Error reason
+    | Error (`Too_large limit) ->
+        Error
+          {
+            Model_eval.reason =
+              Printf.sprintf "the history %s is larger than %d bytes, so it is not extended" path
+                limit;
+            next_step =
+              Some
+                "Move that history file aside to start a new history for this result; the moved \
+                 file keeps every earlier record, and the result itself is unaffected.";
+          }
+    | Error (`Unreadable reason) -> Error (failure reason)
     | Ok bytes -> (
-        match parse_prefix bytes with
-        | records, None -> Ok (records, None)
-        | records, Some (offset, reason) -> Ok (records, Some (String.sub bytes 0 offset, reason)))
-  in
-  (* another format version: the marker followed by a complete version line other than 1 *)
-  let other_format bytes =
-    let marker = "\njacquard-model-history format=" in
-    let m = String.length marker and n = String.length bytes in
-    let rec scan i =
-      if i + m > n then false
-      else if String.sub bytes i m = marker then
-        match String.index_from_opt bytes (i + m) '\n' with
-        | Some e ->
-            let v = String.sub bytes (i + m) (e - i - m) in
-            (v <> "1" && v <> "" && String.for_all (fun c -> c >= '0' && c <= '9') v) || scan (i + 1)
-        | None -> false
-      else scan (i + 1)
-    in
-    scan 0
-  in
-  let* () =
-    match damage with
-    | Some _
-      when match Model_doc.read_bounded ~limit:(64 * 1024 * 1024) path with
-           | Ok bytes -> other_format bytes
-           | Error _ -> false ->
-        Error "the history holds a record of another format; it was left untouched"
-    | _ -> Ok ()
+        match (parse_prefix bytes, lazy (other_format bytes)) with
+        | (records, None), _ -> Ok (records, None)
+        | (_, Some _), (lazy (Some v)) ->
+            Error
+              {
+                Model_eval.reason =
+                  Printf.sprintf
+                    "the history holds a record of another format (format=%s); it was left \
+                     untouched"
+                    v;
+                next_step =
+                  Some
+                    "Evaluate with the Jacquard version that wrote it, or move the history file \
+                     aside to start a new one; the result itself is unaffected.";
+              }
+        | (records, Some (offset, reason)), _ ->
+            Ok (records, Some (String.sub bytes 0 offset, reason)))
   in
   (* snapshots are written, or repaired, on every evaluation, so pruning them never sticks *)
   let* bindings =
@@ -359,25 +551,25 @@ let append ~cache ~document (prepared : Model_doc.prepared) (r : Model_doc.resol
         let* snapshot =
           match b.Model_doc.b_content with
           | None -> Ok None
-          | Some c -> Result.map Option.some (write_snapshot ~cache c)
+          | Some c -> Result.map Option.some (plain (write_snapshot ~cache c))
         in
         Ok ({ kind = b.Model_doc.b_kind; name = b.Model_doc.b_name; snapshot } :: acc))
       r.Model_doc.bindings (Ok [])
   in
   let* policy_snapshot =
-    write_snapshot ~cache (Observation_policy.serialize prepared.Model_doc.policy)
+    plain (write_snapshot ~cache (Observation_policy.serialize prepared.Model_doc.policy))
   in
   (* the entry's and each term argument's closure: bodies and manifest, retained *)
   let write_closure h =
     let text, bodies = closure ~store:prepared.Model_doc.store h in
     let* () =
       List.fold_left
-        (fun acc body ->
+        (fun acc (_, body) ->
           let* () = acc in
-          Result.map ignore (write_snapshot ~cache body))
+          Result.map ignore (plain (write_snapshot ~cache body)))
         (Ok ()) bodies
     in
-    write_snapshot ~cache text
+    plain (write_snapshot ~cache text)
   in
   let* entry_closure = write_closure r.Model_doc.dependency.Model_doc.entry in
   let* bindings =
@@ -409,21 +601,21 @@ let append ~cache ~document (prepared : Model_doc.prepared) (r : Model_doc.resol
     | Some text -> (
         match parse_closure text with
         | None -> true
-        | Some lines ->
+        | Some (_, lines) ->
             List.exists
               (fun (_, _, b) ->
                 b = "none"
                 ||
                 match Hash.of_canonical_hex b with
-                | Some h -> read_snapshot ~cache h = None
+                | Some h -> not (snapshot_present ~cache h)
                 | None -> true)
               lines)
   in
   let stale_refs (l : record) =
     List.exists
-      (fun b -> match b.snapshot with Some h -> read_snapshot ~cache h = None | None -> false)
+      (fun b -> match b.snapshot with Some h -> not (snapshot_present ~cache h) | None -> false)
       l.bindings
-    || read_snapshot ~cache l.policy_snapshot = None
+    || (not (snapshot_present ~cache l.policy_snapshot))
     || (match l.entry_closure with Some h -> bodies_missing h | None -> true)
     (* a term argument's manifest whose retained bodies are gone also needs a refresh *)
     || List.exists
@@ -442,7 +634,7 @@ let append ~cache ~document (prepared : Model_doc.prepared) (r : Model_doc.resol
                && l.entry_closure = Some entry_closure) -> (
       match damage with
       | None -> Ok None
-      | Some (kept, _) -> Result.map (fun () -> note) (Model_eval.write_atomic path kept))
+      | Some (kept, _) -> Result.map (fun () -> note) (plain (Model_eval.write_atomic path kept)))
   | _ -> (
       let record =
         {
@@ -462,8 +654,8 @@ let append ~cache ~document (prepared : Model_doc.prepared) (r : Model_doc.resol
       let bytes = serialize_record record in
       match damage with
       | Some (kept, _) ->
-          Result.map (fun () -> note) (Model_eval.write_atomic path (kept ^ frame bytes))
-      | None -> Result.map (fun () -> None) (append_frame path bytes))
+          Result.map (fun () -> note) (plain (Model_eval.write_atomic path (kept ^ frame bytes)))
+      | None -> Result.map (fun () -> None) (plain (append_frame path bytes)))
 
 (* --- explanations --- *)
 
@@ -472,6 +664,8 @@ type change = {
   subject : string option;
   before : string option;
   after : string option;
+  names : (string * string) list;
+  diff : string list;
 }
 
 type freshness =
@@ -487,6 +681,7 @@ type explanation = {
   outcome : string option;
   previous : Hash.t option;
   missing : string list;
+  notes : string list;
   freshness : freshness;
   transition : (string * change list) option;
   transition_missing : string list;
@@ -518,41 +713,176 @@ let byte_count content = function
       | Some bytes -> Printf.sprintf "%d bytes" (String.length bytes)
       | None -> "(unavailable)")
 
-let differences old_ now_ =
-  let change ?subject ?before ?after component = { component; subject; before; after } in
-  (* the named declarations that differ between two closure manifests, the root's own name aside *)
+let surface_kind = function
+  | "term" -> Some Surface_name.Term
+  | "con" -> Some Surface_name.Con
+  | "op" -> Some Surface_name.Op
+  | "type" -> Some Surface_name.Type
+  | "effect" -> Some Surface_name.Effect
+  | _ -> None
+
+(* "term add, int.add" or "con W, type Wrap": each name as the surface spells it, after its kind
+   whenever the kind changes; kinds in the order [jacquard diff] ranks them, so they never
+   alternate *)
+let names_text names =
+  let rank = function
+    | "term" -> 0
+    | "con" -> 1
+    | "op" -> 2
+    | "type" -> 3
+    | "effect" -> 4
+    | _ -> 5
+  in
+  let names = List.stable_sort (fun (a, _) (b, _) -> compare (rank a) (rank b)) names in
+  let rec go last = function
+    | [] -> []
+    | (kind, name) :: rest ->
+        let shown =
+          match surface_kind kind with Some k -> Surface_name.render k name | None -> name
+        in
+        (if Some kind = last then shown else kind ^ " " ^ shown) :: go (Some kind) rest
+  in
+  String.concat ", " (go None names)
+
+(* a retained body, parsed, when it is the declaration its manifest names *)
+let load_retained decl body =
+  match Store.load_object ~file:"(retained declaration)" body with
+  | Ok (d, hashes) when hex hashes.Canon.decl_hash = decl -> Some (d, hashes)
+  | _ -> None
+
+(* the readable [jacquard diff] of two retained bodies of one declaration, without its heading;
+   empty when either body is not the declaration its manifest names. Each side names its callee's
+   own members first, then the declarations retained in its own manifest that the current store no
+   longer holds ([old_context], [new_context]), then whatever the current store names *)
+let body_diff ~(store : Store.t) ~label ~old_context ~new_context (old_decl, old_body)
+    (new_decl, new_body) =
+  let load = load_retained in
+  match (load old_decl old_body, load new_decl new_body) with
+  | Some ((od, _) as o), Some ((nd, _) as n) -> (
+      let effect_name_of h =
+        Option.value ~default:"unregistered"
+          (List.find_map
+             (fun (name, (e : Resolve.entry)) ->
+               if e.Resolve.kind = Resolve.KEffect && Hash.equal e.Resolve.hash h then Some name
+               else None)
+             (Store.names store))
+      in
+      let divergences =
+        Diff.form_divergences ~syntax:Diff.Surface ~effect_name_of ~path:label
+          (Kernel.decl_to_form od) (Kernel.decl_to_form nd)
+      in
+      match
+        Diff.render_readable
+          ~old_side:(Diff.source_side store (Lazy.force old_context @ [ o ]))
+          ~new_side:(Diff.source_side store (Lazy.force new_context @ [ n ]))
+          [ (label, Diff.Changed { divergences; dependents = []; origin = None }) ]
+      with
+      | Some text -> ( match String.split_on_char '\n' text with _ :: rest -> rest | [] -> [])
+      | None -> [])
+  | _ -> []
+
+let differences ~store old_ now_ =
+  let change ?subject ?before ?after ?(names = []) ?(diff = []) component =
+    { component; subject; before; after; names; diff }
+  in
+  (* the named declarations that differ between two closure manifests, the root's own declaration
+     aside; names bound to the same declarations on both sides (a declaration's aliases, and the
+     members of a group or type) are one change, with the diff of their retained bodies *)
   let callees old_c new_c =
     let manifest side = function
       | None -> None
       | Some h -> Option.bind (side.content h) parse_closure
     in
     match (manifest old_ old_c, manifest now_ new_c) with
-    | Some o, Some n ->
-        let named m = List.filter (fun ((name, _), _, _) -> name <> "-") m in
-        let o = named o and n = named n in
+    | Some (old_root, o), Some (new_root, n) ->
         (* the root's own declaration, with its group siblings, is the change itself; it is
            found by identity, so a same-named declaration of another kind is still followed *)
-        let root_decls =
-          List.filter_map
-            (fun c -> Option.bind c closure_root)
-            [ Option.bind old_c old_.content; Option.bind new_c now_.content ]
+        let roots = [ old_root; new_root ] in
+        let table m =
+          let t = Hashtbl.create 64 in
+          List.iter
+            (fun (((name, _) as key), d, b) ->
+              if name <> "-" then
+                Hashtbl.replace t key ((d, b) :: Option.value (Hashtbl.find_opt t key) ~default:[]))
+            m;
+          t
         in
-        let decls m key =
+        let ot = table o and nt = table n in
+        (* every declaration retained in a side's manifest that the current store no longer
+           holds, parsed once and only when a body diff needs it; one the store holds is named by
+           the store under its current name (so a declaration renamed since, but still stored,
+           shows its new name on the old side, where [jacquard diff] shows the old one) *)
+        let retained side m =
+          lazy
+            (let seen = Hashtbl.create 16 in
+             let held = (closure_tables store).owner in
+             List.filter_map
+               (fun (_, d, b) ->
+                 if Hashtbl.mem seen d || Hashtbl.mem held d then None
+                 else (
+                   Hashtbl.add seen d ();
+                   Option.bind (Hash.of_canonical_hex b) (fun h ->
+                       Option.bind (side.content h) (load_retained d))))
+               m)
+        in
+        let old_context = retained old_ o and new_context = retained now_ n in
+        let decls t key =
+          List.sort_uniq compare (Option.value (Hashtbl.find_opt t key) ~default:[])
+        in
+        let keys =
           List.sort_uniq compare
-            (List.filter_map (fun (k, d, _) -> if k = key then Some d else None) m)
+            (Hashtbl.fold
+               (fun k _ acc -> k :: acc)
+               ot
+               (Hashtbl.fold (fun k _ acc -> k :: acc) nt []))
         in
-        let keys = List.sort_uniq compare (List.map (fun (k, _, _) -> k) (o @ n)) in
-        List.filter_map
-          (fun ((name, _) as key) ->
-            let a = decls o key and b = decls n key in
-            if List.exists (fun d -> List.mem d root_decls) (a @ b) then None
-            else
-              match (a, b) with
-              | [], _ :: _ -> Some (change ~subject:name ~after:"added" "callee")
-              | _ :: _, [] -> Some (change ~subject:name ~after:"removed" "callee")
-              | a, b when a <> b -> Some (change ~subject:name "callee")
-              | _ -> None)
-          keys
+        let changed =
+          List.filter_map
+            (fun key ->
+              let a = decls ot key and b = decls nt key in
+              if List.exists (fun (d, _) -> List.mem d roots) (a @ b) then None
+              else if List.map fst a = List.map fst b then None
+              else Some (key, a, b))
+            keys
+        in
+        let groups = Hashtbl.create 16 in
+        let order =
+          List.fold_left
+            (fun order (key, a, b) ->
+              let g = (List.map fst a, List.map fst b) in
+              match Hashtbl.find_opt groups g with
+              | Some (ks, a, b) ->
+                  Hashtbl.replace groups g (key :: ks, a, b);
+                  order
+              | None ->
+                  Hashtbl.replace groups g ([ key ], a, b);
+                  g :: order)
+            [] changed
+          |> List.rev
+        in
+        List.map
+          (fun g ->
+            let keys, a, b = Hashtbl.find groups g in
+            let names = List.rev_map (fun (name, kind) -> (kind, name)) keys in
+            (* the JSON subject stays the plain names; text spells them with their kinds *)
+            let subject = String.concat ", " (List.map snd names) in
+            let body side (d, b) =
+              Option.bind (Hash.of_canonical_hex b) (fun h ->
+                  Option.map (fun text -> (d, text)) (side.content h))
+            in
+            match (a, b) with
+            | [], _ -> change ~subject ~after:"added" ~names "callee"
+            | _, [] -> change ~subject ~after:"removed" ~names "callee"
+            | [ x ], [ y ] ->
+                let diff =
+                  match (body old_ x, body now_ y) with
+                  | Some x, Some y ->
+                      body_diff ~store ~label:(names_text names) ~old_context ~new_context x y
+                  | _ -> []
+                in
+                change ~subject ~names ~diff "callee"
+            | _ -> change ~subject ~names "callee")
+          order
     | _ -> []
   in
   let o = old_.dep and n = now_.dep in
@@ -627,20 +957,34 @@ let differences old_ now_ =
   entry @ fixed @ count @ pairs 0 old_.binds now_.binds oa na
 
 let explain ~cache ~document (prepared : Model_doc.prepared) =
+  let store = prepared.Model_doc.store in
   let policy_bytes = Observation_policy.serialize prepared.Model_doc.policy in
   let one (r : Model_doc.resolved) =
     let name = r.Model_doc.decl.Model_doc.r_name in
-    let manifest h = fst (closure ~store:prepared.Model_doc.store h) in
-    let entry_manifest = manifest r.Model_doc.dependency.Model_doc.entry in
-    let term_manifests =
+    let entry_manifest, entry_bodies = closure ~store r.Model_doc.dependency.Model_doc.entry in
+    let term_closures =
       List.map
-        (function Model_doc.Term { term; _ } -> Some (manifest term) | _ -> None)
+        (function Model_doc.Term { term; _ } -> Some (closure ~store term) | _ -> None)
         r.Model_doc.dependency.Model_doc.arguments
     in
-    let current_contents =
-      (policy_bytes :: entry_manifest :: List.filter_map Fun.id term_manifests)
-      @ List.filter_map (fun (b : Model_doc.binding) -> b.Model_doc.b_content) r.Model_doc.bindings
-    in
+    let term_manifests = List.map (Option.map fst) term_closures in
+    (* what the document holds now, by hash: computed once, never read back from the cache *)
+    let current = Hashtbl.create 64 in
+    let add text = Hashtbl.replace current (hex (Hash.of_string text)) text in
+    let add_hashed (h, text) = Hashtbl.replace current (hex h) text in
+    add policy_bytes;
+    add entry_manifest;
+    List.iter add_hashed entry_bodies;
+    List.iter
+      (function
+        | Some (text, bodies) ->
+            add text;
+            List.iter add_hashed bodies
+        | None -> ())
+      term_closures;
+    List.iter
+      (fun (b : Model_doc.binding) -> Option.iter add b.Model_doc.b_content)
+      r.Model_doc.bindings;
     let now_ =
       {
         entry = r.Model_doc.decl.Model_doc.r_entry;
@@ -660,7 +1004,7 @@ let explain ~cache ~document (prepared : Model_doc.prepared) =
             r.Model_doc.bindings term_manifests;
         content =
           (fun h ->
-            match List.find_opt (fun c -> Hash.equal (Hash.of_string c) h) current_contents with
+            match Hashtbl.find_opt current (hex h) with
             | Some c -> Some c
             | None -> read_snapshot ~cache h);
       }
@@ -674,31 +1018,24 @@ let explain ~cache ~document (prepared : Model_doc.prepared) =
         content = read_snapshot ~cache;
       }
     in
+    let empty =
+      {
+        result = name;
+        evaluated_at = None;
+        outcome = None;
+        previous = None;
+        missing = [];
+        notes = [];
+        freshness = Never_evaluated;
+        transition = None;
+        transition_missing = [];
+      }
+    in
     match read_history ~cache ~document name with
-    | Error reason ->
-        {
-          result = name;
-          evaluated_at = None;
-          outcome = None;
-          previous = None;
-          missing = [];
-          freshness = Unavailable reason;
-          transition = None;
-          transition_missing = [];
-        }
+    | Error reason -> { empty with freshness = Unavailable reason }
     | Ok history -> (
         match List.rev history with
-        | [] ->
-            {
-              result = name;
-              evaluated_at = None;
-              outcome = None;
-              previous = None;
-              missing = [];
-              freshness = Never_evaluated;
-              transition = None;
-              transition_missing = [];
-            }
+        | [] -> empty
         | latest :: earlier -> (
             (* a policy snapshot that is present must be the policy its record names *)
             let policy_mismatch (rc : record) =
@@ -714,22 +1051,20 @@ let explain ~cache ~document (prepared : Model_doc.prepared) =
             match List.find_opt policy_mismatch history with
             | Some _ ->
                 {
-                  result = name;
+                  empty with
                   evaluated_at = Some latest.time;
                   outcome = Some latest.outcome;
                   previous = latest.previous;
-                  missing = [];
                   freshness = Unavailable "a record's policy snapshot is not its policy";
-                  transition = None;
-                  transition_missing = [];
                 }
             | None ->
                 (* a dependency whose snapshot is gone is never assumed current, and is always named *)
                 (* a manifest's retained bodies count as its snapshots *)
-                let bodies_gone what manifest =
-                  match Option.bind manifest parse_closure with
-                  | None -> []
-                  | Some lines ->
+                let notes = ref [] in
+                let bodies_gone what text =
+                  match parse_closure text with
+                  | None -> [ what ^ " declarations" ]
+                  | Some (_, lines) ->
                       if
                         List.exists
                           (fun (_, _, b) ->
@@ -739,7 +1074,20 @@ let explain ~cache ~document (prepared : Model_doc.prepared) =
                             | Some h -> read_snapshot ~cache h = None
                             | None -> true)
                           lines
-                      then [ what ^ " declarations" ]
+                      then (
+                        (match oversized ~store text with
+                        | [] -> ()
+                        | big ->
+                            notes :=
+                              Printf.sprintf
+                                "%s declarations: %s %s stored in more than %d bytes, the \
+                                 retention limit, so %s never retained"
+                                what (String.concat ", " big)
+                                (if List.length big = 1 then "is" else "are")
+                                retention_limit
+                                (if List.length big = 1 then "its body is" else "their bodies are")
+                              :: !notes);
+                        [ what ^ " declarations" ])
                       else []
                 in
                 let gone_of (rc : record) =
@@ -749,8 +1097,7 @@ let explain ~cache ~document (prepared : Model_doc.prepared) =
                       | Some h -> (
                           match read_snapshot ~cache h with
                           | None -> [ b.kind ^ " " ^ b.name ]
-                          | Some text when b.kind = "term" ->
-                              bodies_gone ("term " ^ b.name) (Some text)
+                          | Some text when b.kind = "term" -> bodies_gone ("term " ^ b.name) text
                           | Some _ -> [])
                       | None -> [])
                     rc.bindings
@@ -761,13 +1108,14 @@ let explain ~cache ~document (prepared : Model_doc.prepared) =
                   | Some h -> (
                       match read_snapshot ~cache h with
                       | None -> [ "entry " ^ rc.entry_name ]
-                      | Some text -> bodies_gone ("entry " ^ rc.entry_name) (Some text))
+                      | Some text -> bodies_gone ("entry " ^ rc.entry_name) text)
                 in
                 let gone = gone_of latest in
+                let latest_notes = List.rev !notes in
                 let freshness =
                   if Hash.equal latest.key (Model_doc.key r.Model_doc.dependency) then
                     if gone = [] then Current else Unknown gone
-                  else Stale (differences (of_record latest) now_)
+                  else Stale (differences ~store (of_record latest) now_)
                 in
                 (* records refreshing the latest key are one recomputation: the transition is
                    from the last record with another key, at the run's first record *)
@@ -780,7 +1128,7 @@ let explain ~cache ~document (prepared : Model_doc.prepared) =
                 let transition, transition_missing =
                   match before with
                   | prev :: _ ->
-                      ( Some (first.time, differences (of_record prev) (of_record latest)),
+                      ( Some (first.time, differences ~store (of_record prev) (of_record latest)),
                         gone_of prev )
                   | [] -> (None, [])
                 in
@@ -791,6 +1139,7 @@ let explain ~cache ~document (prepared : Model_doc.prepared) =
                   outcome = Some first.outcome;
                   previous = first.previous;
                   missing = gone;
+                  notes = latest_notes;
                   freshness;
                   transition;
                   transition_missing;
@@ -799,11 +1148,19 @@ let explain ~cache ~document (prepared : Model_doc.prepared) =
   List.map one prepared.Model_doc.resolved
 
 let change_text c =
-  let subject = match c.subject with Some s -> " " ^ s | None -> "" in
+  let subject =
+    match (c.names, c.subject) with
+    | _ :: _, _ -> " " ^ names_text c.names
+    | [], Some s -> " " ^ s
+    | [], None -> ""
+  in
   match (c.before, c.after) with
   | Some b, Some a -> Printf.sprintf "%s%s: %s -> %s" c.component subject b a
   | None, Some status -> Printf.sprintf "%s%s %s" c.component subject status
   | _ -> Printf.sprintf "%s%s changed" c.component subject
+
+(* a change, and under it the diff of its retained bodies *)
+let change_lines indent c = (indent ^ change_text c) :: List.map (fun l -> indent ^ l) c.diff
 
 let render_text e =
   let head =
@@ -822,30 +1179,41 @@ let render_text e =
   let stale =
     match e.freshness with
     | Stale cs ->
-        List.map (fun c -> "  " ^ change_text c) cs
+        List.concat_map (change_lines "  ") cs
         @ if e.missing = [] then [] else [ "  snapshots gone: " ^ String.concat ", " e.missing ]
     | _ -> []
   in
+  let notes = List.map (fun n -> "  note: " ^ n) e.notes in
   let transition =
     match e.transition with
     | None -> []
     | Some (time, cs) ->
-        (Printf.sprintf "  last change (%s):" time :: List.map (fun c -> "    " ^ change_text c) cs)
+        (Printf.sprintf "  last change (%s):" time :: List.concat_map (change_lines "    ") cs)
         @
         if e.transition_missing = [] then []
         else [ "    snapshots gone: " ^ String.concat ", " e.transition_missing ]
   in
-  (head :: stale) @ transition
+  (head :: stale) @ notes @ transition
 
 let change_json c =
   let o = function Some s -> `String s | None -> `Null in
   `Assoc
-    [
-      ("component", `String c.component);
-      ("subject", o c.subject);
-      ("before", o c.before);
-      ("after", o c.after);
-    ]
+    ([
+       ("component", `String c.component);
+       ("subject", o c.subject);
+       ("before", o c.before);
+       ("after", o c.after);
+     ]
+    @ (if c.names = [] then []
+       else
+         [
+           ( "names",
+             `List
+               (List.map
+                  (fun (kind, name) -> `Assoc [ ("kind", `String kind); ("name", `String name) ])
+                  c.names) );
+         ])
+    @ if c.diff = [] then [] else [ ("diff", `List (List.map (fun l -> `String l) c.diff)) ])
 
 let to_json es =
   let one e =
@@ -866,6 +1234,7 @@ let to_json es =
          ("previous", match e.previous with Some h -> `String (hex h) | None -> `Null);
          ("missing", `List (List.map (fun m -> `String m) e.missing));
        ]
+      @ (if e.notes = [] then [] else [ ("notes", `List (List.map (fun n -> `String n) e.notes)) ])
       @ extra
       @ [
           ( "last_transition",

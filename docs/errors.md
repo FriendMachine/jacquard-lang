@@ -173,8 +173,9 @@ malformed source, path, or host-message byte in a string field is replaced with 
 | E0835 | constructing, destructuring or pattern-matching a capability | forging a capability value |
 | E0836 | a capability type in a nominal declaration or user operation signature | `type Box = Box(StateRef Int)` |
 | E0837 | a task (an `async.spawn` child or an `async.scope` body) performs an effect, other than Async, Channel or a root-grantable effect, that no handler inside the task handles; a task runs on a fresh continuation, so a handler outside it never handles its operations | `all(fn () -> async.scope(fn () -> first(1)))` where `all` handles `first` |
+| E0838 | an inference model run on a fresh continuation (the thunk of `dist.sample-lw` or `dist.sample-lw-v1`) performs an effect, other than Dist or a root-grantable effect, that no handler inside the model handles; the driver has no scheduler and a handler outside the model never handles its operations. `jacquard infer enumerate` and `jacquard infer lw` also refuse a model whose row names a root twin (`dist@task`): its task leaves those operations to the root, and inference never sees them | `emit.collect(fn () -> dist.sample-lw(fn () -> { emit(1); sample(Bernoulli(0.5)) }, 4, 1))` |
 | W0801 | redundant match clause | a clause after `(pwild)` |
-| W0802 | a handler discharges an effect that a task in its body also performs and leaves to the root grant (shown as `name@task`); those operations never reach this handler. Best-effort: a handler inside a wrapper whose body is a parameter is not inspected | `handle async.scope(fn () -> print("x")) { ... print(s) resume k -> k(()) ... }` |
+| W0802 | a handler discharges an effect that a task or an inference model in its body also performs and leaves to the root grant (shown as `name@task`); those operations never reach this handler. Best-effort: a handler inside a wrapper whose body is a parameter is not inspected | `handle async.scope(fn () -> print("x")) { ... print(s) resume k -> k(()) ... }` |
 
 E0817 has one bounded transformer exception: a direct clause lambda may capture
 `resume` when its `handle` expression is immediately applied once to syntactic
@@ -209,6 +210,7 @@ also emits E0817; consuming the captured resumption twice emits E0816.
 | runtime | E0919 | the invocation's computation fuel ran out; the run is incomplete, neither a pass nor a failure (docs/computation-fuel.md) | `spin(n) = spin(add(n, 1))` under `jacquard run --fuel 2000` |
 | runtime | E0920 | a scoped instance operation found no frame of its scope on the current continuation (a stale capability, reachable only through unchecked `eval`) | a capability smuggled out of `state.scoped` through `eval-code` and used later |
 | runtime | E0921 | the invocation's alloc-v1 allocation budget ran out, or a registry ceiling (`--max-tasks`, `--max-channels`, `--max-frontier`) was reached; the run is incomplete, neither a pass nor a failure (docs/designs/allocation-limits.md) | `size(build(100))` under `jacquard run --alloc 100` |
+| inference | E0922 | an inference model opened `async.scope`; no inference driver (`dist.sample-lw`, `jacquard infer`, a model document's enumerate or lw result, a `posterior.*-v1` builtin) has a scheduler, so the scope cannot run. The posterior builtins report it inside E1544 (exact) or E1547 (approximate) | `jacquard infer enumerate` over `{ let x = sample(Bernoulli(0.5)); async.scope(fn () -> x) }` |
 
 ## Warp (E10xx)
 
@@ -457,7 +459,7 @@ the exact Decision and ID.
 | E1540 | two governance review facts conflict for one exact identity | duplicate operation facts carry different driver identities or labels |
 | E1541 | typed governance review facts violate an internal comparison invariant | a reached operation is absent from the complete facade operation set |
 | E1542 | a governance decision-chain presentation cannot be derived safely from the typed explanation | completion evidence disagrees with the verified action state, or a non-Ask verdict carries consent evidence |
-| E1543 | a posterior-risk model cannot be resolved by exact hash or does not have the closed `(GovernanceCall) ->{Dist} Risk` signature | selecting a pure function or a model with an additional effect |
+| E1543 | a posterior-risk model cannot be resolved by exact hash or does not have the closed `(GovernanceCall) ->{Dist} Risk` signature (a row naming the root twin `Dist@task` is refused too) | selecting a pure function, a model with an additional effect, or a model annotated `->{Dist@task}` |
 | E1544 | exact posterior configuration is invalid or bounded exhaustive inference fails | exhausting `max-branches` before the next terminal path |
 | E1545 | exact posterior evidence, weights, normalization, support, or branch accounting is invalid | four zero weights or underflow that erases theoretically positive support |
 | E1546 | exact projection cannot validate its Call, baseline, carried identities, rule, or conservative result | substituting a different Call, handler descriptor, source evidence, or nested posterior wrapper |

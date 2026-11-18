@@ -326,6 +326,7 @@ let diagnostic_summary = function
   | "E0835" -> "A capability cannot be constructed or taken apart"
   | "E0836" -> "A capability type cannot be stored in a declaration"
   | "E0837" -> "An effect performed in a task is not handled inside the task"
+  | "E0838" -> "An effect performed in an inference model is not handled inside the model"
   | "E0907" -> "A scoped task or channel handle is invalid"
   | code -> "Checker rejected the program (" ^ code ^ ")"
 
@@ -355,6 +356,7 @@ let diagnostic_next_step = function
   | "E0835" -> "Obtain a capability from its scoped combinator."
   | "E0836" -> "Carry a capability through a type parameter instead of a fixed field type."
   | "E0837" -> "Handle the effect inside the thunk passed to async.spawn or async.scope."
+  | "E0838" -> "Handle the effect inside the thunk passed to dist.sample-lw."
   | "E0907" -> "Use the handle only inside the exact async.scope that created it."
   | _ -> "Correct the rejected checker input and try again."
 
@@ -389,17 +391,24 @@ let instance_refusal ?meta code detail =
     ~summary:(diagnostic_summary code) ~cause:detail ~next_step:(diagnostic_next_step code)
     ~contrast:None ()
 
-(** [task_may_leave_unhandled identity] is the E0837 policy: an effect a task may leave to its
-    surroundings, because the scheduler (Async, Channel) or a root grant handles it there. Every
-    other effect must be handled inside the task, since a task runs on a fresh continuation and no
-    handler outside it ever handles its operations. Identity decides: a user effect that reuses a
-    built-in spelling is not root-grantable. A root twin ([E@task], {!Types.task_twin}) is admitted:
-    it is an admitted effect a nested task already left to the root. *)
-let task_may_leave_unhandled identity =
+(** [task_may_leave_unhandled kind identity] is the E0837 and E0838 policy: an effect a task or an
+    inference model may leave to its surroundings. A task ([Types.Task]) may leave the scheduler's
+    Async and Channel and the root-grantable effects, which the scheduler or a root grant handles
+    there. An inference model ([Types.Driver], the thunk of [dist.sample-lw]) may leave only the
+    root-grantable effects: its driver has no scheduler. Every other effect must be handled inside
+    the thunk, since it runs on a fresh continuation and no handler outside it ever handles its
+    operations. Identity decides: a user effect that reuses a built-in spelling is not
+    root-grantable. A root twin ([E@task], {!Types.task_twin}) is admitted for both kinds: it is an
+    admitted effect a nested task already left to the root. *)
+let task_may_leave_unhandled kind identity =
   let hex = Hash.to_hex identity in
-  String.equal hex Concurrency_contract.async_effect_hash
-  || String.equal hex Channel_contract.channel_effect_hash
-  || Types.is_task_twin identity || Task_twin.root_grantable identity
+  Types.is_task_twin identity || Task_twin.root_grantable identity
+  ||
+  match kind with
+  | Types.Task ->
+      String.equal hex Concurrency_contract.async_effect_hash
+      || String.equal hex Channel_contract.channel_effect_hash
+  | Types.Driver -> false
 
 (** [task_outward_label identity] is the label an admitted effect a task leaves unhandled carries
     outside the task: the scheduler's Async stays itself (the spawn or scope call is an Async
@@ -463,6 +472,8 @@ let refusal_name_of ctx identity =
   in
   if
     Option.is_none (Effect_registry.find_canonical identity)
+    (* the scheduler's Async is built in, though the registry lists it without its identity *)
+    && (not (String.equal (Hash.to_hex identity) Concurrency_contract.async_effect_hash))
     && List.exists collides Effect_registry.catalog
   then Effect_registry.qualify_user_hint ~name_hint:name identity
   else name
@@ -1481,7 +1492,13 @@ let op_scheme ctx ?meta ?(clause = false) (h : Hash.t) : scheme =
                  tail feeds it, but a handler, annotation or join around the spawn constrains only
                  the outward row. *)
               let child = repr_row child_row in
-              Types.check_task_effects child.effects;
+              let kind =
+                match child.tail with
+                | RVar { contents = RUnbound { task_row; _ } } ->
+                    Types.stricter_kind task_row (Some Types.Task)
+                | _ -> Some Types.Task
+              in
+              Option.iter (fun kind -> Types.check_task_effects kind child.effects) kind;
               match child.tail with
               | RVar ({ contents = RUnbound ({ level; _ } as unbound) } as cell) ->
                   (* the child's fixed effects leave it as their outward labels (root twins) *)
@@ -1502,7 +1519,7 @@ let op_scheme ctx ?meta ?(clause = false) (h : Hash.t) : scheme =
                       {
                         unbound with
                         lacks_instances = true;
-                        task_row = true;
+                        task_row = kind;
                         task_out = outward :: unbound.task_out;
                       };
                   outward
@@ -3105,17 +3122,20 @@ let check_task_handlers ctx : Diag.t list =
           let twins = List.map (fun h -> "`" ^ name_of ctx h ^ "@task`") bypassed in
           Some
             (Diag.warning ?span:(Meta.span handle_meta) ~domain:Checker ~code:"W0802"
-               ~summary:"A handler does not handle the operations of a task it encloses"
+               ~summary:
+                 "A handler does not handle the operations of a task or an inference model it \
+                  encloses"
                ~cause:
                  (Printf.sprintf
                     "this handler handles %s, but a task (an async.spawn child or an async.scope \
-                     body) in its body also performs %s and leaves it unhandled; a task runs on a \
-                     fresh continuation, so those operations go to the root grant, not to this \
-                     handler, and the row keeps %s"
+                     body) or an inference model (a dist.sample-lw thunk) in its body also \
+                     performs %s and leaves it unhandled; a task or a model runs on a fresh \
+                     continuation, so those operations go to the root grant, not to this handler, \
+                     and the row keeps %s"
                     (String.concat ", " names) (String.concat ", " names) (String.concat ", " twins))
                ~next_step:
-                 "Handle the effect inside the thunk passed to async.spawn or async.scope, or \
-                  grant it at the root."
+                 "Handle the effect inside the thunk passed to async.spawn, async.scope or \
+                  dist.sample-lw, or grant it at the root."
                ~contrast:None ()))
     sites
 
@@ -3504,8 +3524,11 @@ let checker_codes : (string * string) list =
     ("E0835", "capability constructed or taken apart");
     ("E0836", "capability type stored in a nominal declaration or operation signature");
     ("E0837", "effect performed in a task that no handler inside the task handles");
+    ("E0838", "effect performed in an inference model that no handler inside the model handles");
     ("W0801", "redundant match clause");
-    ("W0802", "handler around a task whose operations of the handled effect go to the root grant");
+    ( "W0802",
+      "handler around a task or an inference model whose operations of the handled effect go to \
+       the root grant" );
     ("W1206", "labeled API called with a positional Bool constructor literal");
     ("W1207", "labeled API called across a definite repeated-type positional parameter run");
     ("E1202", "recovery marker rejected by the strict checker");

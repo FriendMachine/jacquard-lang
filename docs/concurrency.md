@@ -146,6 +146,50 @@ read-only handler. A user handler that interprets Async itself (the native parit
 seam) runs children inline, where an outer handler would reach them, but is
 refused like any other.
 
+Inference models follow the same rule, with a stricter policy. The model a
+likelihood-weighting driver runs (the thunk of `dist.sample-lw` and of
+`dist.sample-lw-v1`) also runs on a fresh continuation, once per sample. The
+driver handles Dist, and the root grants handle the root-grantable effects; no
+driver has a scheduler, and no handler outside the model ever handles its
+operations. The model must therefore handle inside itself every effect other
+than Dist and the root-grantable effects, Async and Channel included, or the
+checker refuses the program with E0838:
+
+```text
+error[E0838]: An effect performed in an inference model is not handled inside the model
+  Cause: an inference model (the thunk passed to dist.sample-lw) performs `emit`, and no handler inside the model handles it; ...
+  Next step: Handle the effect inside the thunk passed to dist.sample-lw.
+```
+
+The model's row and the row of the `dist.sample-lw` call have separate tails,
+linked in one direction as for a task, so a parent effect performed beside the
+driver call (`emit.collect(fn () -> { let p = dist.sample-lw(m, 4, 1); emit(1);
+p })`) is still handled around it, and a wrapper of the driver infers two row
+variables. A root-grantable effect the model leaves to the root reaches the
+call as its root twin: `dist.sample-lw(fn () -> { print("hi\n");
+sample(Bernoulli(0.5)) }, 2, 1)` has the row `{Console@task}`, which a
+closed `{Console}` annotation or a row the prelude fixes does not accept, and
+W0802 warns about a Console handler written around the call. The same known
+limits apply: a thunk the parent both calls and passes to the driver, or a
+signature naming one row variable for both rows, joins the two rows again. The
+in-language `dist.enumerate` and `dist.enumerate-v1` are deep handlers, not
+fresh-continuation drivers: an operation they do not handle reaches the
+handlers around them, and none of this applies.
+
+The top-level drivers run a model as a fresh root and read its row exactly:
+`jacquard infer enumerate` and `jacquard infer lw` refuse a model whose row
+names a root twin (E0838; `dist@task` is a sample a task in the model leaves to
+the root, which inference never sees), and `posterior.run-exact-v1` and
+`posterior.sample-evidence-v1` accept only the closed row `{Dist}` (E1543), so
+a model annotated `->{Dist@task}` or `->{Dist, Dist@task}` is refused.
+
+Known limit: `async.scope` cannot run inside an inference model. Opening a scope
+adds nothing to a row, so the checker cannot see it; every driver
+(`dist.sample-lw`, `dist.sample-lw-v1`, `jacquard infer`, a model document's
+enumerate or lw result, and the posterior builtins, which wrap it in E1544 or
+E1547) stops with E0922 when the model opens one. Open the scope outside the
+model and pass its result in.
+
 The identity guard applies only to the resolved operation whose complete
 declaration is the exact four-operation interface above. The nominal HASH_V0
 identities are `Task`

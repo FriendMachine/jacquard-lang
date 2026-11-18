@@ -233,11 +233,21 @@ let check_model_signature store builtin_signatures model_id =
                   | Types.TArrow
                       ([ Types.TCon (actual_call, []) ], row, Types.TCon (actual_risk, [])) ->
                       let row = Types.repr_row row in
+                      (* the driver is the model's only Dist handler, so the raw labels decide:
+                         a root twin (Dist@task) is a sample a task leaves to the root, which
+                         inference would never see *)
                       if
                         Hash.equal actual_call call_type && Hash.equal actual_risk risk_type
-                        && row.Types.tail = Types.RClosed
-                        && Types.effect_identities row = [ dist_effect ]
+                        && row.Types.tail = Types.RClosed && row.Types.instances = []
+                        && List.length row.Types.effects = 1
+                        && List.for_all (Hash.equal dist_effect) row.Types.effects
                       then Ok ()
+                      else if List.exists Types.is_task_twin row.Types.effects then
+                        Error
+                          "E1543: model must have the closed signature (GovernanceCall) ->{Dist} \
+                           Risk; its row names a root twin such as `dist@task`, an effect a task \
+                           or a nested inference model in the model leaves to the root, which \
+                           posterior inference never sees"
                       else
                         Error
                           "E1543: model must have the closed signature (GovernanceCall) ->{Dist} \

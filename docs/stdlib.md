@@ -436,6 +436,11 @@ The checker enforces these rules:
   both a task and parent code (a thunk the parent both calls and spawns) or a
   signature names one row variable for a task row and its call row; give such
   a wrapper two row variables (see [concurrency.md](concurrency.md)).
+  The model passed to `dist.sample-lw` or `dist.sample-lw-v1` follows the
+  same rule with a stricter policy: its driver has no scheduler, so it must
+  handle inside itself every effect other than Dist and the root-grantable
+  effects, Async and Channel included (E0838). A root-grantable effect it
+  leaves to the root reaches the call as its root twin (`Console@task`).
 - **Handlers.** A user handler cannot handle an instance operation (E0834).
 - **Opacity.** Capabilities cannot be forged or taken apart (E0835). A
   capability type cannot be written directly into a nominal type's field or a
@@ -647,9 +652,20 @@ implementations live in the prelude and are not duplicated in this block.
 dist.pmf        : (Distribution a, a, Eq a) ->{} Real
 dist.enumerate  : (() ->{Dist | e} a) ->{| e} List (a, Real)     -- normalized, unmerged
 dist.tally      : (List (a, Real), Eq a) ->{} List (a, Real)   -- merge equal outcomes
-dist.sample-lw  : (() ->{Dist | e} a, Int, Int) ->{| e} List (a, Real)  -- seed, count
+dist.sample-lw  : (() ->{Dist | e1} a, Int, Int) ->{| e} List (a, Real)  -- count, seed; e1 feeds e
 dist.named      : (Text, Distribution a) ->{Dist | e} a           -- exactly sample; recordings name the draw
 ```
+
+`dist.sample-lw` runs its model on a fresh continuation, once per sample. Only
+Dist (handled by the driver) and the root-grantable effects reach the model;
+any other effect, Async and Channel included, must be handled inside it
+(E0838), and a root-grantable effect it leaves unhandled is charged to the call
+as its root twin (`Console@task`). Every effect of `e1` also belongs to `e`.
+`dist.enumerate` is an in-language handler instead: an operation it does not
+handle reaches the handlers around it. Known limit: no inference driver has a
+scheduler, so a model that opens `async.scope` under `dist.sample-lw`,
+`jacquard infer`, a model document or a posterior builtin stops with E0922
+(see [concurrency.md](concurrency.md)).
 
 `dist.named(name, d)` is `sample(d)` under every handler: the inference
 drivers, a root `dist` grant and Warp see the same model. A recording run
@@ -664,8 +680,8 @@ use one classification, and `jacquard infer` applies it too:
 ```text
 dist.enumerate-v1 : (() ->{Dist | e} a, Int) ->{| e}
                       Result InferenceFailureV1 (InferencePosteriorV1 a)   -- max terminal paths
-dist.sample-lw-v1 : (() ->{Dist | e} a, Int, Int) ->{| e}
-                      Result InferenceFailureV1 (InferencePosteriorV1 a)   -- count, seed
+dist.sample-lw-v1 : (() ->{Dist | e1} a, Int, Int) ->{| e}
+                      Result InferenceFailureV1 (InferencePosteriorV1 a)   -- count, seed; e1 feeds e
 
 InferencePosteriorV1 a = InferencePosteriorV1(entries: List (a, Real), metadata: InferenceMetadataV1)
 InferenceFailureV1     = InferenceImpossibleV1(InferenceMetadataV1)

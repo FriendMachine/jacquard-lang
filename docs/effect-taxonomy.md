@@ -176,7 +176,9 @@ outside the child reaches the child's row). The dependency survives aliases, hig
 wrappers, returned closures, tuples, polymorphic row instantiation, and nested
 scopes. Executable concurrency fixtures pin `{Async, Net@task}` before a scope
 and `{Net@task}` after one (`Net@task` is the root twin the child's Net
-carries outside it, see `docs/concurrency.md`), and reject misleading closed annotations; a caller row wider than the
+carries outside it, see `docs/concurrency.md`; a `dist.sample-lw` model leaves
+root-grantable effects the same way, as `Console@task`, and must handle every
+other effect itself, E0838), and reject misleading closed annotations; a caller row wider than the
 child row, which the shared tail used to reject as cyclic, is now accepted.
 Generic operation typing remains unchanged. `Async` is still a reserved
 taxonomy name, while its implementation has progressed beyond a placeholder:

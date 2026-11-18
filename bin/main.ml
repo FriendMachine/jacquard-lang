@@ -1089,17 +1089,38 @@ let infer_check store model =
       match Check.check_top cctx (Kernel.Expr model) with
       | Error ds -> Error ds
       | Ok { Check.row; _ } -> (
+          let row = Types.repr_row (Option.value row ~default:Types.empty_row) in
           let granted =
             match Prelude_identity.lookup_kind store "dist" Resolve.KEffect with
             | Some { Resolve.hash; _ } -> [ hash ]
             | None -> []
           in
-          match
-            Check.manifest_errors cctx ~grantable:Prelude.grantable_names ~granted
-              (Option.value row ~default:Types.empty_row)
-          with
-          | [] -> Ok ()
-          | ds -> Error ds))
+          (* the driver is the model's only Dist handler: a root twin is an effect a task in the
+             model leaves to the root, whose samples inference would never see. The raw labels
+             decide, before the manifest maps twins to their base effects. *)
+          match List.filter Types.is_task_twin row.Types.effects with
+          | _ :: _ as twins ->
+              Error
+                (List.map
+                   (fun twin ->
+                     Diag.error ~domain:Diag.Checker ~code:"E0838"
+                       ~summary:
+                         "An effect performed in an inference model is not handled inside the model"
+                       ~cause:
+                         (Printf.sprintf
+                            "the model leaves `%s@task` to the root from a task (an async.spawn \
+                             child or an async.scope body) or a nested inference model; inference \
+                             never sees those operations"
+                            (Check.name_of cctx (Types.base_effect twin)))
+                       ~next_step:
+                         "Perform the effect in the model body itself, outside any task or nested \
+                          model, or handle it inside that task or model."
+                       ~contrast:None ())
+                   twins)
+          | [] -> (
+              match Check.manifest_errors cctx ~grantable:Prelude.grantable_names ~granted row with
+              | [] -> Ok ()
+              | ds -> Error ds)))
 
 (* RT.1, RT.2: an exhausted run is incomplete, and every bounded command exits 2 for it, as run
    does *)

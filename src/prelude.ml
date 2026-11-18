@@ -1733,7 +1733,7 @@ and base_builtin_signatures (store : Store.t) : ((Hash.t * Types.scheme) list, D
             }
         in
         let tail =
-          Types.new_rvar ~lacks_instances:true ~task_row:true ~task_out:[ result_row ] level
+          Types.new_rvar ~lacks_instances:true ~task_row:Types.Task ~task_out:[ result_row ] level
         in
         let child_row = Types.{ effects = [ async_h ]; payloads = []; instances = []; tail } in
         let thunk = Types.TArrow ([], child_row, value) in
@@ -1989,16 +1989,28 @@ and base_builtin_signatures (store : Store.t) : ((Hash.t * Types.scheme) list, D
           gen_level = 0;
         }
       in
-      (* dist.sample-lw : forall a e. (() ->{dist | e} a, int, int) ->{e} list (pair a real)
-         — the thunk's row must NAME dist (the driver discharges it), everything else rides
-         the shared row variable *)
+      (* dist.sample-lw : forall a e e1. (() ->{dist | e1} a, int, int) ->{e} list (pair a real)
+         — the thunk's row must NAME dist (the driver discharges it). The model runs on a fresh
+         continuation per sample, with no scheduler: no instance entry (A1.4), and no effect but
+         the root-grantable ones may stay unhandled in it (E0838). The call's row has its own
+         tail, fed directionally by the model's (each effect as its root twin E@task), so a
+         handler, annotation or join around the call constrains only the call's row. *)
       let sample_lw_sig =
         match lookup_hash store ~kind:Resolve.KEffect "dist" with
         | Error _ -> None
         | Ok dist_eff ->
             let av = a () in
-            (* the thunk runs on a fresh continuation per sample: no instance entry (A1.4) *)
-            let e = Types.new_rvar ~lacks_instances:true 1 in
+            let call_row =
+              {
+                Types.effects = [];
+                payloads = [];
+                instances = [];
+                tail = Types.new_rvar ~lacks_instances:true 1;
+              }
+            in
+            let model_tail =
+              Types.new_rvar ~lacks_instances:true ~task_row:Types.Driver ~task_out:[ call_row ] 1
+            in
             Some
               {
                 Types.ty =
@@ -2010,13 +2022,13 @@ and base_builtin_signatures (store : Store.t) : ((Hash.t * Types.scheme) list, D
                               Types.effects = [ dist_eff ];
                               payloads = [];
                               instances = [];
-                              tail = e;
+                              tail = model_tail;
                             },
                             av );
                         int_ty;
                         int_ty;
                       ],
-                      { Types.effects = []; payloads = []; instances = []; tail = e },
+                      call_row,
                       Types.TCon (list_h, [ Types.TCon (pair_h, [ av; real_ty ]) ]) );
                 gen_level = 0;
               }

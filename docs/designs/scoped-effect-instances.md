@@ -515,7 +515,10 @@ enclosing language handler appeared to handle statically, e.g.
 `emit.collect(fn () -> async.scope(fn () -> emit(1)))`, were an SC.4/TS.0
 progress gap: the child failed at run time with an unhandled effect. A parallel
 rule now closes it for the two task callbacks only. Their row variable also
-carries a "task row" flag (not `dist.sample-lw`, whose thunk is not a task).
+carries a "task row" flag. The `dist.sample-lw` thunk, an inference model run
+on a fresh continuation, carries the same flag with a stricter kind (E0838:
+only Dist and the root-grantable effects may stay unhandled, since the driver
+has no scheduler); kinds merge to the stricter one.
 Binding a flagged variable to a row with a fixed effect other than Async,
 Channel or a root-grantable effect (identity, not spelling) fails with E0837.
 Unlike the instance flag, the task flag is not shared with the operation's
@@ -534,10 +537,10 @@ at a rigid tail like the instance flag. The outward tail keeps the instance
 flag, so E0833 refuses exactly what it refused before (Limit L2 below).
 
 **Limit L2 (pinned by tests).** Under SC.4 the operation's row excludes
-instance entries like the callback's row: for likelihood weighting it shares
-the callback's row tail (not its whole row: weighting removes Dist), and for
+instance entries like the callback's row: for likelihood weighting,
 `async.spawn` and `async.scope` it has its own tail that keeps the instance
-flag. The calling body's ambient row shares the operation's row tail.
+flag (likelihood weighting shared the callback's row tail until the E0838
+link gave it its own). The calling body's ambient row shares the operation's row tail.
 Therefore
 a callback invoked by a body that calls a fresh-continuation operation,
 directly or through any callee whose row shares its tail (row-polymorphic

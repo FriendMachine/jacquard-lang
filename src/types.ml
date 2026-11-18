@@ -63,20 +63,27 @@ and instance = { effect_id : Hash.t; label : ty; payload : ty list }
 
 and rtail = RClosed | RVar of rvar ref | RSkolem of int * string
 
+(** The kind of a fresh-continuation thunk whose row is flagged: a task runs under the scheduler,
+    which handles Async and Channel; an inference model runs under a driver that has no scheduler.
+    Both leave the root-grantable effects to the root grants. *)
+and task_kind = Task | Driver
+
 and rvar =
   | RUnbound of {
       id : int;
       level : level;
       lacks_instances : bool;
-      task_row : bool;
+      task_row : task_kind option;
       task_out : row list;
     }
       (** [lacks_instances] marks the row of a fresh-continuation callback (design §9 A1.4): it may
           never be bound to a row with an instance entry, and it passes to the bound row's tail.
-          [task_row] marks the row of a task thunk (an [async.spawn] child or an [async.scope]
-          body): it may never be bound to a row with a fixed effect that {!task_effect_allowed}
-          rejects, because only the scheduler and the root grants handle what a task leaves
-          unhandled. It passes to the bound row's tail the same way.
+          [task_row] marks the row of a task thunk (an [async.spawn] child or an [async.scope] body,
+          [Some Task]) or of an inference model a driver runs on a fresh continuation (the
+          [dist.sample-lw] thunk, [Some Driver]): it may never be bound to a row with a fixed effect
+          that {!task_effect_allowed} rejects for its kind, because only the scheduler (for a task)
+          and the root grants handle what such a thunk leaves unhandled. It passes to the bound
+          row's tail the same way; two kinds merge to the stricter ({!stricter_kind}).
 
           [task_out] are the outward rows a task tail feeds: the row of the [async.spawn] operation
           or of the [async.scope] call, each with its own tail. The task row and an outward row
@@ -118,14 +125,24 @@ let copy_var id level = if is_label_id id then new_label_var level else new_tvar
 (** [new_rvar ?lacks_instances ?task_row ?task_out level] is a fresh row tail at [level]. A caller
     passing [task_out] must respect the level invariant of {!rvar}: no outward row may hold a
     variable deeper than [level]. *)
-let new_rvar ?(lacks_instances = false) ?(task_row = false) ?(task_out = []) level : rtail =
+let new_rvar ?(lacks_instances = false) ?task_row ?(task_out = []) level : rtail =
   RVar (ref (RUnbound { id = fresh_id (); level; lacks_instances; task_row; task_out }))
 
-(** [task_effect_allowed] decides, by effect identity, whether a task may leave an effect unhandled:
-    the scheduler's Async and Channel effects and the root-grantable effects. {!Check} installs the
-    policy when it is linked; the default admits every effect, so code that never links the checker
-    cannot observe a refusal. *)
-let task_effect_allowed : (Hash.t -> bool) ref = ref (fun _ -> true)
+(** [stricter_kind a b] merges two task-row flags: a flagged row stays flagged, and [Driver] (which
+    admits fewer effects) wins over [Task]. A thunk passed both to [async.spawn] and to
+    [dist.sample-lw] must satisfy both policies, and the [Driver] policy is the stricter one. *)
+let stricter_kind a b =
+  match (a, b) with
+  | Some Driver, _ | _, Some Driver -> Some Driver
+  | Some Task, _ | _, Some Task -> Some Task
+  | None, None -> None
+
+(** [task_effect_allowed kind identity] decides, by effect identity, whether a thunk of [kind] may
+    leave an effect unhandled: for a task, the scheduler's Async and Channel effects and the
+    root-grantable effects; for an inference model, only the root-grantable effects. {!Check}
+    installs the policy when it is linked; the default admits every effect, so code that never links
+    the checker cannot observe a refusal. *)
+let task_effect_allowed : (task_kind -> Hash.t -> bool) ref = ref (fun _ _ -> true)
 
 (* ------------------------------------------------------------------ *)
 (* Root-twin labels                                                    *)
@@ -156,11 +173,12 @@ let task_outward_label : (Hash.t -> Hash.t) ref = ref Fun.id
 
 (** The sentence a row mismatch involving a root twin appends to its detail. *)
 let task_twin_explanation =
-  "; `name@task` marks an effect a task (an async.spawn child or an async.scope body) leaves to \
-   the root grant, which a row naming only the effect does not include: write it in the annotation \
-   (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the \
-   task; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there \
-   handle the effect inside the task"
+  "; `name@task` marks an effect a task (an async.spawn child or an async.scope body) or an \
+   inference model (a dist.sample-lw thunk) leaves to the root grant, which a row naming only the \
+   effect does not include: write it in the annotation (`Console@task` for `console@task`) or \
+   remove the annotation, or handle the effect inside the task or the model; a row the prelude \
+   fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect \
+   inside the task or the model"
 
 (** [twin_note labels] is {!task_twin_explanation} when [labels] holds a root twin, and empty
     otherwise. *)
@@ -581,7 +599,8 @@ and unify_rows (ra : row) (rb : row) : unit =
       | ( RUnbound { level = la; lacks_instances = lacks_a; task_row = task_a; _ },
           RUnbound { level = lb; lacks_instances = lacks_b; task_row = task_b; _ } ) ->
           let tail =
-            new_rvar ~lacks_instances:(lacks_a || lacks_b) ~task_row:(task_a || task_b) (min la lb)
+            new_rvar ~lacks_instances:(lacks_a || lacks_b) ?task_row:(stricter_kind task_a task_b)
+              (min la lb)
           in
           bind_rvar rva
             {
@@ -614,7 +633,7 @@ and bind_rvar (rv : rvar ref) (r : row) : unit =
                  "an instance operation cannot run in a callback that runs on a fresh continuation \
                   (async.spawn, async.scope or dist.sample-lw)" ));
       (* a task's row never gains an effect that only an outer handler could handle *)
-      if task_row then check_task_effects (repr_row r).effects;
+      Option.iter (fun kind -> check_task_effects kind (repr_row r).effects) task_row;
       (* occurs: the bound row's tail must not be this very variable *)
       match (repr_row r).tail with
       | RVar { contents = RUnbound { id = id'; _ } } when id = id' ->
@@ -647,7 +666,7 @@ and bind_rvar (rv : rvar ref) (r : row) : unit =
                      unbound with
                      level = min unbound.level level;
                      lacks_instances = unbound.lacks_instances || lacks_instances;
-                     task_row = unbound.task_row || task_row;
+                     task_row = stricter_kind unbound.task_row task_row;
                      task_out =
                        List.fold_left
                          (fun outs row -> if List.memq row outs then outs else outs @ [ row ])
@@ -660,22 +679,39 @@ and bind_rvar (rv : rvar ref) (r : row) : unit =
           if bound.effects <> [] then
             List.iter (push_outward ~effects:bound.effects ~payloads:bound.payloads) task_out)
 
-(** [check_task_effects effects] raises the E0837 refusal when a task row would gain a fixed effect
-    that {!task_effect_allowed} rejects. *)
-and check_task_effects effects =
-  match List.filter (fun h -> not (!task_effect_allowed h)) effects with
+(** [check_task_effects kind effects] raises the refusal when a row flagged [kind] would gain a
+    fixed effect that {!task_effect_allowed} rejects: E0837 for a task, E0838 for an inference
+    model. *)
+and check_task_effects kind effects =
+  match List.filter (fun h -> not (!task_effect_allowed kind h)) effects with
   | [] -> ()
-  | refused ->
-      raise
-        (Instance_refusal
-           ( "E0837",
-             fun ~name_of ->
-               Printf.sprintf
-                 "a task (an async.spawn child or an async.scope body) performs %s, and no handler \
-                  inside the task handles it; a task runs on a fresh continuation under the \
-                  scheduler, so a handler outside the task never handles its operations"
-                 (String.concat ", "
-                    (List.map (fun identity -> "`" ^ name_of identity ^ "`") refused)) ))
+  | refused -> (
+      let names ~name_of =
+        String.concat ", " (List.map (fun identity -> "`" ^ name_of identity ^ "`") refused)
+      in
+      match kind with
+      | Task ->
+          raise
+            (Instance_refusal
+               ( "E0837",
+                 fun ~name_of ->
+                   Printf.sprintf
+                     "a task (an async.spawn child or an async.scope body) performs %s, and no \
+                      handler inside the task handles it; a task runs on a fresh continuation \
+                      under the scheduler, so a handler outside the task never handles its \
+                      operations"
+                     (names ~name_of) ))
+      | Driver ->
+          raise
+            (Instance_refusal
+               ( "E0838",
+                 fun ~name_of ->
+                   Printf.sprintf
+                     "an inference model (the thunk passed to dist.sample-lw) performs %s, and no \
+                      handler inside the model handles it; the driver runs the model on a fresh \
+                      continuation without a scheduler, so only Dist and the root grants reach it, \
+                      and a handler outside the model never handles its operations"
+                     (names ~name_of) )))
 
 (** [push_outward ~effects ~payloads outward] adds a task's fixed [effects] and their [payloads] to
     one outward row, as {!require_effects} would: a flexible tail absorbs the missing labels. Each
@@ -707,8 +743,9 @@ and push_outward ~effects ~payloads outward =
   | missing, (RClosed | RSkolem _) ->
       raise
         (Unify_error
-           ("a closed effect row cannot absorb extra effects: an effect a task performs also \
-             belongs to the row of the async.spawn or async.scope call that starts it"
+           ("a closed effect row cannot absorb extra effects: an effect a task or an inference \
+             model performs also belongs to the row of the async.spawn, async.scope or \
+             dist.sample-lw call that starts it"
            ^ if List.exists is_task_twin missing then task_twin_explanation else ""))
 
 (** [include_rows sub into] returns the directional union recording that [sub] is evaluated in

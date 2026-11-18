@@ -88,6 +88,9 @@ let diagnostic ~code cause =
         ( "Inference failed numerically.",
           "Rescale the model's weights so every path weight and the total stay finite, \
            nonnegative, and representable." )
+    | "E0922" ->
+        ( "async.scope cannot run inside an inference model.",
+          "Open the scope outside the inference model and pass its result in." )
     | "E0918" ->
         ( "Exact enumeration exceeded its terminal-path budget.",
           "Raise --max-branches after reviewing the model's finite support size, or use likelihood \
@@ -106,8 +109,22 @@ let err ~code fmt = Printf.ksprintf (fun cause -> Error [ diagnostic ~code cause
    allocation (RT.2, E0921), which keeps its code: running out is incomplete inference, not a model
    failure. *)
 let runtime_diagnostic ~code error =
-  if Runtime_err.is_incomplete error then Runtime_err.to_diag error
-  else diagnostic ~code (Runtime_err.to_string error)
+  match error with
+  | Runtime_err.Diagnostic d when Diag.code d = Some "E0922" -> d
+  | _ ->
+      if Runtime_err.is_incomplete error then Runtime_err.to_diag error
+      else diagnostic ~code (Runtime_err.to_string error)
+
+(* C1: no driver hosts a scheduler, so the scope control operation [async.scope] performs under a
+   driver fails closed with its own code (E0922) instead of an unhandled-effect or type error. *)
+let is_scope_control op = Hash.equal op Concurrency_contract.scope_control_hash
+
+let scope_cause =
+  "the model opened async.scope; an inference driver (dist.sample-lw, jacquard infer, a model \
+   document's enumerate or lw result, or a posterior builtin) runs the model on a fresh \
+   continuation without a scheduler, so a scope cannot run inside it"
+
+let scope_refusal () = Runtime_err.Diagnostic (diagnostic ~code:"E0922" scope_cause)
 
 (* --- distribution values --- *)
 
@@ -516,6 +533,7 @@ let enumerate_risk_exact (ctx : Eval.ctx) ~max_branches (model : Eval.state) :
           | _ ->
               invalid_distribution "observe expects a distribution and a value, got %d arguments"
                 (List.length args))
+      | Ok (Op { op; _ }) when is_scope_control op -> Error [ diagnostic ~code:"E0922" scope_cause ]
       | Ok (Op { op; name; args; _ }) ->
           err ~code:"E0914" "unexpected operation %s/%d (%s)" name (List.length args)
             (Hash.to_hex op)
@@ -625,6 +643,7 @@ let likelihood_weighting (ctx : Eval.ctx) ~seed ~samples (model : unit -> Eval.s
         | Ok p ->
             Result.bind (Eval.resume_validated_state ctx resume Value.unit_v) (fun state ->
                 one_run rng state (weight *. p)))
+    | Ok (Validated_op { op; _ }) when is_scope_control op -> Error (scope_refusal ())
     | Ok (Validated_op { name; _ }) ->
         (* a non-dist op reached the root during a weighted run (unreachable via the CLI,
            which manifest-checks first; the raw harness can get here) *)
@@ -786,6 +805,7 @@ let enumerate_v1 ?max_branches (ctx : Eval.ctx) (model : Eval.state) :
               factor p
                 (fun () -> Eval.resume_captured_state ctx resume Value.unit_v)
                 (fun state -> explore state (weight *. p)))
+      | Ok (Op { op; _ }) when is_scope_control op -> Error (scope_refusal ())
       | Ok (Op { name; args; _ }) ->
           Error
             (Runtime_err.Type_error
@@ -847,6 +867,7 @@ let lw_surviving_runs (ctx : Eval.ctx) ~seed ~samples (model : unit -> Eval.stat
         | Ok p ->
             Result.bind (Eval.resume_validated_state ctx resume Value.unit_v) (fun state ->
                 one_run rng state (weight *. p) (possible && p <> 0.0)))
+    | Ok (Validated_op { op; _ }) when is_scope_control op -> Error (scope_refusal ())
     | Ok (Validated_op { name; _ }) ->
         Error (Runtime_err.Unhandled { effect_ = "(not handled during inference)"; op = name })
   in

@@ -89,9 +89,9 @@ A handler written directly in the program around such a task is warned about
   > (t(), u())
   > EOF
   $ jacquard check handler.jac --print-sigs
-  handler.jac:6:7-10:2: warning[W0802]: A handler does not handle the operations of a task it encloses
-    Cause: this handler handles `console`, but a task (an async.spawn child or an async.scope body) in its body also performs `console` and leaves it unhandled; a task runs on a fresh continuation, so those operations go to the root grant, not to this handler, and the row keeps `console@task`
-    Next step: Handle the effect inside the thunk passed to async.spawn or async.scope, or grant it at the root.
+  handler.jac:6:7-10:2: warning[W0802]: A handler does not handle the operations of a task or an inference model it encloses
+    Cause: this handler handles `console`, but a task (an async.spawn child or an async.scope body) or an inference model (a dist.sample-lw thunk) in its body also performs `console` and leaves it unhandled; a task or a model runs on a fresh continuation, so those operations go to the root grant, not to this handler, and the row keeps `console@task`
+    Next step: Handle the effect inside the thunk passed to async.spawn, async.scope or dist.sample-lw, or grant it at the root.
   quiet : forall a | e. (() ->{Console | e} a) ->{| e} a
   t : () ->{Console@task} TaskResult ()
   u : () ->{Console@task} TaskResult ()
@@ -120,12 +120,12 @@ bypassed, and each is warned about once.
   >   }
   > EOF
   $ jacquard check nested-handlers.jac --print-sigs
-  nested-handlers.jac:1:7-11:4: warning[W0802]: A handler does not handle the operations of a task it encloses
-    Cause: this handler handles `console`, but a task (an async.spawn child or an async.scope body) in its body also performs `console` and leaves it unhandled; a task runs on a fresh continuation, so those operations go to the root grant, not to this handler, and the row keeps `console@task`
-    Next step: Handle the effect inside the thunk passed to async.spawn or async.scope, or grant it at the root.
-  nested-handlers.jac:2:5-6:6: warning[W0802]: A handler does not handle the operations of a task it encloses
-    Cause: this handler handles `console`, but a task (an async.spawn child or an async.scope body) in its body also performs `console` and leaves it unhandled; a task runs on a fresh continuation, so those operations go to the root grant, not to this handler, and the row keeps `console@task`
-    Next step: Handle the effect inside the thunk passed to async.spawn or async.scope, or grant it at the root.
+  nested-handlers.jac:1:7-11:4: warning[W0802]: A handler does not handle the operations of a task or an inference model it encloses
+    Cause: this handler handles `console`, but a task (an async.spawn child or an async.scope body) or an inference model (a dist.sample-lw thunk) in its body also performs `console` and leaves it unhandled; a task or a model runs on a fresh continuation, so those operations go to the root grant, not to this handler, and the row keeps `console@task`
+    Next step: Handle the effect inside the thunk passed to async.spawn, async.scope or dist.sample-lw, or grant it at the root.
+  nested-handlers.jac:2:5-6:6: warning[W0802]: A handler does not handle the operations of a task or an inference model it encloses
+    Cause: this handler handles `console`, but a task (an async.spawn child or an async.scope body) or an inference model (a dist.sample-lw thunk) in its body also performs `console` and leaves it unhandled; a task or a model runs on a fresh continuation, so those operations go to the root grant, not to this handler, and the row keeps `console@task`
+    Next step: Handle the effect inside the thunk passed to async.spawn, async.scope or dist.sample-lw, or grant it at the root.
   t : () ->{Console@task} TaskResult ()
 
 Known limit: a handler that re-performs the effect it handles, such as
@@ -157,7 +157,7 @@ or open, does not admit `console@task`, and the diagnostic says what to write.
   > EOF
   $ jacquard check closed.jac
   closed.jac:2:1-45: error[E0804]: The value does not satisfy its annotation
-    Cause: equation definition `t` does not match its signature: expected () ->{console} task-result (), got () ->{console@task | e} task-result () (a closed or rigid effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) leaves to the root grant, which a row naming only the effect does not include: write it in the annotation (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the task; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect inside the task)
+    Cause: equation definition `t` does not match its signature: expected () ->{console} task-result (), got () ->{console@task | e} task-result () (a closed or rigid effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) or an inference model (a dist.sample-lw thunk) leaves to the root grant, which a row naming only the effect does not include: write it in the annotation (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the task or the model; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect inside the task or the model)
     Next step: Change the value or its annotation so the two types agree.
   [1]
   $ cat > open.jac <<'EOF'
@@ -166,7 +166,7 @@ or open, does not admit `console@task`, and the diagnostic says what to write.
   > EOF
   $ jacquard check open.jac
   open.jac:2:1-45: error[E0804]: The value does not satisfy its annotation
-    Cause: equation definition `t` does not match its signature: expected () ->{console | e} task-result (), got () ->{console@task | e} task-result () (a closed or rigid effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) leaves to the root grant, which a row naming only the effect does not include: write it in the annotation (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the task; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect inside the task)
+    Cause: equation definition `t` does not match its signature: expected () ->{console | e} task-result (), got () ->{console@task | e} task-result () (a closed or rigid effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) or an inference model (a dist.sample-lw thunk) leaves to the root grant, which a row naming only the effect does not include: write it in the annotation (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the task or the model; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect inside the task or the model)
     Next step: Change the value or its annotation so the two types agree.
   [1]
 
@@ -206,17 +206,17 @@ console grant (the direct handler is warned about).
   > (scripted(), direct())
   > EOF
   $ jacquard check around.jac --print-sigs
-  around.jac:4:12-8:2: warning[W0802]: A handler does not handle the operations of a task it encloses
-    Cause: this handler handles `console`, but a task (an async.spawn child or an async.scope body) in its body also performs `console` and leaves it unhandled; a task runs on a fresh continuation, so those operations go to the root grant, not to this handler, and the row keeps `console@task`
-    Next step: Handle the effect inside the thunk passed to async.spawn or async.scope, or grant it at the root.
+  around.jac:4:12-8:2: warning[W0802]: A handler does not handle the operations of a task or an inference model it encloses
+    Cause: this handler handles `console`, but a task (an async.spawn child or an async.scope body) or an inference model (a dist.sample-lw thunk) in its body also performs `console` and leaves it unhandled; a task or a model runs on a fresh continuation, so those operations go to the root grant, not to this handler, and the row keeps `console@task`
+    Next step: Handle the effect inside the thunk passed to async.spawn, async.scope or dist.sample-lw, or grant it at the root.
   t : () ->{Console@task} TaskResult ()
   scripted : () ->{Console@task} Result Text (TaskResult ())
   direct : () ->{Console@task} TaskResult ()
   _ : (Result Text (TaskResult ()), TaskResult ())
   $ jacquard check around.jac --manifest dist
-  around.jac:4:12-8:2: warning[W0802]: A handler does not handle the operations of a task it encloses
-    Cause: this handler handles `console`, but a task (an async.spawn child or an async.scope body) in its body also performs `console` and leaves it unhandled; a task runs on a fresh continuation, so those operations go to the root grant, not to this handler, and the row keeps `console@task`
-    Next step: Handle the effect inside the thunk passed to async.spawn or async.scope, or grant it at the root.
+  around.jac:4:12-8:2: warning[W0802]: A handler does not handle the operations of a task or an inference model it encloses
+    Cause: this handler handles `console`, but a task (an async.spawn child or an async.scope body) or an inference model (a dist.sample-lw thunk) in its body also performs `console` and leaves it unhandled; a task or a model runs on a fresh continuation, so those operations go to the root grant, not to this handler, and the row keeps `console@task`
+    Next step: Handle the effect inside the thunk passed to async.spawn, async.scope or dist.sample-lw, or grant it at the root.
   error[E0814]: The program requires an effect that was not granted
     Cause: This program requires console [world/low] — talk to the process terminal, which is not granted (performed via `print`).
     Next step: grant it with --allow console, or handle the effect in the program
@@ -309,7 +309,7 @@ may not leave Console or Dist to the root.
   > EOF
   $ jacquard check hermetic.jac
   hermetic.jac:1:30-4:4: error[E0801]: Types do not agree
-    Cause: argument: expected () ->{check} (), got () ->{console@task | e} () (a closed or rigid effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) leaves to the root grant, which a row naming only the effect does not include: write it in the annotation (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the task; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect inside the task)
+    Cause: argument: expected () ->{check} (), got () ->{console@task | e} () (a closed or rigid effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) or an inference model (a dist.sample-lw thunk) leaves to the root grant, which a row naming only the effect does not include: write it in the annotation (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the task or the model; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect inside the task or the model)
     Next step: the expected side comes from the surrounding context; make both sides agree
   [1]
   $ cat > prop.jac <<'EOF'
@@ -320,7 +320,7 @@ may not leave Console or Dist to the root.
   > EOF
   $ jacquard check prop.jac
   prop.jac:1:31-4:4: error[E0801]: Types do not agree
-    Cause: argument: expected () ->{dist, check} (), got () ->{dist@task | e} () (a closed or rigid effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) leaves to the root grant, which a row naming only the effect does not include: write it in the annotation (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the task; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect inside the task)
+    Cause: argument: expected () ->{dist, check} (), got () ->{dist@task | e} () (a closed or rigid effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) or an inference model (a dist.sample-lw thunk) leaves to the root grant, which a row naming only the effect does not include: write it in the annotation (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the task or the model; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect inside the task or the model)
     Next step: the expected side comes from the surrounding context; make both sides agree
   [1]
 
@@ -336,7 +336,7 @@ checks.
   > EOF
   $ jacquard check world.jac
   world.jac:1:31-4:4: error[E0801]: Types do not agree
-    Cause: argument: expected () ->{console, fs, clock, net, check} (), got () ->{console@task | e} () (a closed or rigid effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) leaves to the root grant, which a row naming only the effect does not include: write it in the annotation (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the task; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect inside the task)
+    Cause: argument: expected () ->{console, fs, clock, net, check} (), got () ->{console@task | e} () (a closed or rigid effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) or an inference model (a dist.sample-lw thunk) leaves to the root grant, which a row naming only the effect does not include: write it in the annotation (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the task or the model; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect inside the task or the model)
     Next step: the expected side comes from the surrounding context; make both sides agree
   [1]
   $ cat > world-annotated.jac <<'EOF'

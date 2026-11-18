@@ -36,6 +36,11 @@ dist.sample-lw-v1 : (() ->{Dist | e} a, Int, Int) ->{| e}
                       Result InferenceFailureV1 (InferencePosteriorV1 a)
 ```
 
+Note (later change): the model's row now has its own tail, linked one way to
+the call's row (`(() ->{Dist | e1} a, Int, Int) ->{| e} ...`, every effect of
+`e1` also in `e`), and a model must handle every effect but Dist and the
+root-grantable ones (E0838); see `docs/concurrency.md`.
+
 `InferenceFailureV1` has three cases:
 
 - `InferenceImpossibleV1`: no surviving path or run.

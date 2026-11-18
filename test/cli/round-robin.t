@@ -186,7 +186,7 @@ handler outside the task never handles it.
   > EOF_JAC
   $ jacquard check async-child-row.jac --manifest console
   async-child-row.jac:2:27-9:6: error[E0801]: Types do not agree
-    Cause: argument: expected () ->{check} (), got () ->{net@task, check | e} () (a closed or rigid effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) leaves to the root grant, which a row naming only the effect does not include: write it in the annotation (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the task; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect inside the task)
+    Cause: argument: expected () ->{check} (), got () ->{net@task, check | e} () (a closed or rigid effect row cannot absorb extra effects; `name@task` marks an effect a task (an async.spawn child or an async.scope body) or an inference model (a dist.sample-lw thunk) leaves to the root grant, which a row naming only the effect does not include: write it in the annotation (`Console@task` for `console@task`) or remove the annotation, or handle the effect inside the task or the model; a row the prelude fixes (Case, Prop, WCase, judge.model's model) cannot name it, so there handle the effect inside the task or the model)
     Next step: the expected side comes from the surrounding context; make both sides agree
   [1]
 

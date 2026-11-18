@@ -251,6 +251,37 @@ let test_sample_lw_builtin () =
         (Float.abs (p -. 0.9) < 0.05)
   | None -> Alcotest.fail "posterior missing true"
 
+(* The runtime backstop for paths the checker never saw (moved from native-effects.t, whose
+   program the checker now refuses with E0838): a model operation that only an outer handler
+   could handle stops the driver with E0902, and a model that opens async.scope stops it with
+   E0922, since no driver has a scheduler. *)
+let test_sample_lw_unchecked_backstop () =
+  let failure src =
+    match Eval_support.eval_with ctx store src with
+    | Error (Runtime_err.Diagnostic d) -> (Diag.code d, Diag.to_cause_string d)
+    | Error e -> Alcotest.failf "expected a driver diagnostic, got %s" (Runtime_err.to_string e)
+    | Ok v -> Alcotest.failf "expected a driver failure, got %s" (Value.show v)
+  in
+  let contains needle text =
+    let n = String.length needle in
+    let rec go i = i + n <= String.length text && (String.sub text i n = needle || go (i + 1)) in
+    go 0
+  in
+  let code, cause =
+    failure
+      "(handle (app (var dist.sample-lw) (lam () (app (var emit) (lit 1))) (lit 3) (lit 42)) (ret \
+       (pvar x) (var x)) (opclause emit ((pvar v)) k (app (var k) (tuple))))"
+  in
+  Alcotest.(check (option string)) "an outer-handled model operation is E0902" (Some "E0902") code;
+  Alcotest.(check bool)
+    "naming the pseudo-effect and the operation" true
+    (contains "not handled during inference" cause && contains "`emit`" cause);
+  let code, _ =
+    failure
+      "(app (var dist.sample-lw) (lam () (app (var async.scope) (lam () (lit 1)))) (lit 2) (lit 1))"
+  in
+  Alcotest.(check (option string)) "a scope in a model is E0922" (Some "E0922") code
+
 let suite =
   [
     Alcotest.test_case "uniform-int support and pmf" `Quick test_uniform_int_support_pmf;
@@ -263,4 +294,6 @@ let suite =
       test_root_sampling_handler;
     Alcotest.test_case "likelihood weighting over uniform-int" `Quick test_lw_uniform_int;
     Alcotest.test_case "dist.sample-lw builtin" `Quick test_sample_lw_builtin;
+    Alcotest.test_case "dist.sample-lw unchecked backstop (E0902, E0922)" `Quick
+      test_sample_lw_unchecked_backstop;
   ]

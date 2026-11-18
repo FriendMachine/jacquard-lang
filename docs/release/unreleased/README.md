@@ -77,3 +77,26 @@ Notes for the next release's upgrade section, collected as changes land:
   closed annotation; its pinned interface lists the base effect. A handler
   written directly around such a task gets warning W0802, and a behavior
   review refuses a case whose task leaves an effect to the root (E1012).
+- **Inference models: E0838, `@task` rows and E0922.** The model passed to
+  `dist.sample-lw` or `dist.sample-lw-v1` runs on a fresh continuation, so a
+  handler around the driver call never handled its operations: a model that
+  performed `emit` or `throw` under an outer handler checked and then failed at
+  run time with E0902. The checker now refuses it with E0838; a model must
+  handle inside itself every effect other than Dist and the root-grantable
+  effects (Async and Channel included: a driver has no scheduler). A
+  root-grantable effect a model leaves to the root is charged as its root twin,
+  so the printed signature of a function whose model prints changes from
+  `{Console}` to `{Console@task}`, and a closed `{Console}` annotation or a row
+  the prelude fixes no longer accepts it: write `Console@task` or handle the
+  effect inside the model. The printed signatures of `dist.sample-lw`,
+  `dist.sample-lw-v1` and their unannotated wrappers gain a second row
+  variable. `jacquard infer enumerate` and `jacquard infer lw` refuse a model
+  whose row names a root twin (E0838), and `posterior.run-exact-v1` and
+  `posterior.sample-evidence-v1` refuse a model annotated with `Dist@task`
+  (E1543). A model that opens `async.scope` under any of these drivers, or a
+  model document's enumerate or lw result, now stops with E0922 instead of an
+  E0902 "unhandled effect" or "type error". A wrapper of `dist.sample-lw`
+  annotated with one row variable for both the model and the call (such as
+  `(() ->{Dist | e} a) ->{| e} List (Pair a Real)`) now joins the two rows, so
+  a handler around a use of it is refused with E0838; give it two row
+  variables, as the inferred signature does.

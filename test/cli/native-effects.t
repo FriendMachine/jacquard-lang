@@ -250,9 +250,10 @@ list (docs/native-plan.md records the boundary). The LW error legs:
     Cause: the posterior is empty: every run is impossible under the observations
     Next step: Change the model or observations so at least one execution branch has nonzero weight.
 
-A model op that only an OUTER handler could cover is hidden by the run's
-isolation on both engines. The driver preserves E0902 as the primary diagnostic
-(exit 2) with the pseudo-effect named:
+A model op that only an OUTER handler could cover never reaches that handler:
+the driver runs the model on a fresh continuation. The checker refuses such a
+model (E0838), so neither engine builds it; the driver's runtime E0902 for
+unchecked paths is pinned by an OCaml unit test (test_dist_lib.ml):
 
   $ cat > lw-outer-op.jqd <<'EOF_JQD'
   > (defeffect e-x ((tvar a)) (op xop () (tref int)))
@@ -261,17 +262,16 @@ isolation on both engines. The driver preserves E0902 as the primary diagnostic
   >   (ret (pvar x) (var x))
   >   (opclause xop () k (app (var k) (lit 1))))
   > EOF_JQD
+  $ jacquard check lw-outer-op.jqd
+  lw-outer-op.jqd:3:3-71: error[E0838]: An effect performed in an inference model is not handled inside the model
+    Cause: an inference model (the thunk passed to dist.sample-lw) performs `e-x`, and no handler inside the model handles it; the driver runs the model on a fresh continuation without a scheduler, so only Dist and the root grants reach it, and a handler outside the model never handles its operations
+    Next step: Handle the effect inside the thunk passed to dist.sample-lw.
+  [1]
   $ jacquard build lw-outer-op.jqd -o lw-outer-op > /dev/null
-  $ jacquard run lw-outer-op.jqd > lw-outer-i.out 2>&1; echo "interpreter exit $?"
-  interpreter exit 2
-  $ ./lw-outer-op > lw-outer-n.out 2>&1; echo "native exit $?"
-  native exit 2
-  $ diff lw-outer-i.out lw-outer-n.out && echo identical
-  identical
-  $ cat lw-outer-n.out
-  error[E0902]: Probabilistic inference stopped on a runtime failure.
-    Cause: unhandled effect (not handled during inference): operation `xop` reached the root without a handler
-    Next step: Correct the reported model runtime failure and rerun inference.
+  lw-outer-op.jqd:3:3-71: error[E0838]: An effect performed in an inference model is not handled inside the model
+    Cause: an inference model (the thunk passed to dist.sample-lw) performs `e-x`, and no handler inside the model handles it; the driver runs the model on a fresh continuation without a scheduler, so only Dist and the root grants reach it, and a handler outside the model never handles its operations
+    Next step: Handle the effect inside the thunk passed to dist.sample-lw.
+  [1]
 
 Ordinary runtime failures inside the model cross the same driver boundary;
 they do not escape as code-less native runtime diagnostics:

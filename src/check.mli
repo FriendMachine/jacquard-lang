@@ -73,9 +73,13 @@ val is_frozen_async_spawn : ctx -> Hash.t -> bool
     return false. The recognized operation's inferred callable row shares its child thunk row, so
     every higher-order transport preserves the child-effect charge. *)
 
-val con_scheme : ctx -> ?meta:Meta.t -> Hash.t -> Types.scheme
+val con_scheme : ctx -> ?meta:Meta.t -> ?site:[ `Construct | `Pattern ] -> Hash.t -> Types.scheme
 (** [con_scheme ctx hash] returns a constructor scheme. It raises [Err] when [hash] is missing, has
-    the wrong role, or its declaration is malformed. *)
+    the wrong role, or its declaration is malformed. [site] (default [`Construct]) selects the
+    construction scheme, in which the frozen prelude [Bernoulli] and [UniformInt] constructors build
+    a [Distribution Bool] and a [Distribution Int] ({!Distribution_contract}); [`Pattern] keeps the
+    declared [Distribution a] for constructor patterns. Every other constructor has the same scheme
+    at both sites. *)
 
 val term_scheme : ctx -> ?meta:Meta.t -> Hash.t -> Types.scheme
 (** [term_scheme ctx hash] returns or computes a term scheme. It raises [Err] for unresolved,
@@ -125,8 +129,9 @@ val force_term : ctx -> Hash.t -> (Types.scheme, Diag.t list) result
 *)
 
 val force_constructor : ctx -> Hash.t -> (Types.scheme, Diag.t list) result
-(** [force_constructor ctx hash] returns the constructor scheme or a checker diagnostic when the
-    public hash is absent, has another role, or its declaration is malformed. *)
+(** [force_constructor ctx hash] returns the constructor's construction scheme (see {!con_scheme})
+    or a checker diagnostic when the public hash is absent, has another role, or its declaration is
+    malformed. *)
 
 type operation_contract = { effect_identity : Hash.t; mode : Kernel.op_mode; scheme : Types.scheme }
 (** Checked store metadata for one exact public operation identity. *)

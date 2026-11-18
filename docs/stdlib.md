@@ -645,6 +645,28 @@ multi effect Dist where {
 }
 ```
 
+The block above is the declaration as written. Its `Bernoulli` and `UniformInt`
+do not mention `a`, but every eliminator (the sampling root, `pmf`, `support`,
+the inference drivers, Warp and native code) produces a `Bool` from a Bernoulli
+and an `Int` from a UniformInt. The checker therefore types a construction of
+the prelude's constructors, in an expression or a host value, by what they
+produce:
+
+```text
+Bernoulli   : (Real) -> Distribution Bool
+UniformInt  : (Int, Int) -> Distribution Int
+Categorical : (List (a, Real)) -> Distribution a
+```
+
+The declaration syntax cannot spell these results; the rule is a checker contract
+on the prelude's own declaration and constructor identities, so a program's type
+with the same names or shape keeps its declared type, and no hash depends on it.
+Patterns keep the declared type: a match on a `Distribution a` may list all three
+constructors, a `Bernoulli` arm teaches nothing about `a`, and exhaustiveness
+still asks for every constructor (a `Bernoulli` arm on a `Distribution Int` is
+accepted but never taken). The prelude's `Categorical` field is unlabeled; the
+`values:` label above is illustrative.
+
 The inference handlers are signature-only interface documentation; their
 implementations live in the prelude and are not duplicated in this block.
 
@@ -1422,6 +1444,15 @@ the released in-language enumerate returns `+nan.0` weights. Its identity is unc
 `dist.enumerate-v1` (INF.1) returns `InferenceImpossibleV1` for the same model, as
 `jacquard infer enumerate` reports E0901. Underflow, non-finite, and negative
 mass are E0917 and `InferenceNumericFailureV1` in both.
+
+**`Bernoulli` and `UniformInt` were typed at any element type.** Before this
+correction their declared schemes, `forall a. (Real) -> Distribution a` and
+`forall a. (Int, Int) -> Distribution a`, let a draw be used at any type:
+`text.length(sample(Bernoulli(0.5)))` checked and then failed at run time,
+`pmf(Bernoulli(0.5), "x")` returned `0.0`, and `observe(Bernoulli(0.5), 3)` gave
+a `NaN` weight. A construction is now a `Distribution Bool` or a
+`Distribution Int` (see [Dist](#dist)) and such programs are check errors
+(E0801, or E0804 against an annotation). No identity changes.
 
 **`Map k v` displays as `map.t k v`.** Elaborated signatures print the store name of the
 wrapper type; the doc's display-syntax `Map k v` is the same type.

@@ -291,6 +291,12 @@ distributions whose merged supports agree but whose values differ.
   $ head -2 wide.out
   error[E1012]: A behavior review's domain, field or world is invalid
     Cause: domain `wide`: a uniform range above 10,000 values cannot be enumerated
+  $ printf 'coins = Bernoulli(0.5)\n' > coin-cases.jac
+  $ jacquard review run --old same.jac --new same.jac --cases coin-cases.jac --entry same --domain coins > coins.out 2>&1; echo "exit=$?"
+  exit=3
+  $ head -2 coins.out
+  error[E1012]: A behavior review's domain, field or world is invalid
+    Cause: the old version's domains, fields, handlers or wrap do not fit the entry's parameters
   $ printf 'ones = version-ones\n' > ones-cases.jac
   $ printf 'same : (Int) ->{} Int\nsame(n) = n\nversion-ones = Categorical([MkPair(1, 0.5), MkPair(1, 0.5)])\n' > ones-old.jac
   $ printf 'same : (Int) ->{} Int\nsame(n) = n\nversion-ones = Categorical([MkPair(1, 1.0)])\n' > ones-new.jac

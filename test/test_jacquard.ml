@@ -124,5 +124,6 @@ let () =
       ("surface-sugar", Test_surface_sugar.suite);
       ("surface-control-sugar", Test_surface_control_sugar.suite);
       ("surface-check", Test_surface_check.suite);
+      ("distribution-contract", Test_distribution_contract.suite);
       ("surface-twins", Test_surface_twins.suite);
     ]

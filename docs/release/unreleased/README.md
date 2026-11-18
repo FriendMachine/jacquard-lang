@@ -100,3 +100,26 @@ Notes for the next release's upgrade section, collected as changes land:
   `(() ->{Dist | e} a) ->{| e} List (Pair a Real)`) now joins the two rows, so
   a handler around a use of it is refused with E0838; give it two row
   variables, as the inferred signature does.
+- **Bernoulli and UniformInt have element types (soundness fix).** A
+  construction of the prelude's `Bernoulli(p)` is now a `Distribution Bool` and
+  of `UniformInt(lo, hi)` a `Distribution Int`, matching what sampling, `pmf`,
+  `support`, the inference drivers, Warp and native code produce. Before, both
+  were `Distribution a` for any `a`, so a draw could be used at any type: for
+  example `text.length(sample(Bernoulli(0.5)))` checked and then failed at run
+  time, `pmf(Bernoulli(0.5), "x")` returned `0.0`, and
+  `observe(Bernoulli(0.5), 3)` gave a `NaN` weight. Such programs are now
+  refused at check time (E0801, or E0804 against an annotation), and so is an
+  annotation that claims a draw is polymorphic, such as
+  `forall a. () ->{Dist} a` over `sample(Bernoulli(0.5))`: write `Bool` (or
+  `Int`). Printed signatures narrow accordingly, for example from
+  `forall a. () ->{Dist} a` to `() ->{Dist} Bool` and from
+  `forall a. () ->{} Distribution a` to `() ->{} Distribution Bool`, so the
+  interface-v1 `signature` of an exported function that builds or samples one
+  of these distributions changes, and with it the interface identity and
+  `interface diff`; term and prelude hashes do not change. A behavior review
+  domain that is a Bernoulli or UniformInt for a parameter of another type is
+  refused (E1012), and host protocol v0 refuses a `bernoulli` or `uniform-int`
+  value sent for a `Distribution T` whose `T` is not `Bool` or `Int` (E1603).
+  Patterns are unchanged: a match on a distribution keeps its declared type
+  and exhaustiveness still lists all three constructors. A program's own type
+  with the same constructor names is unaffected.

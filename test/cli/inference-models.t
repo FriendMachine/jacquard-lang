@@ -71,8 +71,8 @@ cannot hide it from the root grant (W0802 warns about such a handler).
   > t()
   > EOF
   $ jacquard check print.jac --print-sigs
-  t : forall a. () ->{Console@task} List (Pair a Real)
-  _ : forall a. List (Pair a Real)
+  t : () ->{Console@task} List (Pair Bool Real)
+  _ : List (Pair Bool Real)
   $ jacquard run print.jac
   error[E0814]: The program requires an effect that was not granted
     Cause: This program requires console [world/low] — talk to the process terminal, which is not granted (performed via `t`).
@@ -87,8 +87,8 @@ cannot hide it from the root grant (W0802 warns about such a handler).
   > t()
   > EOF
   $ jacquard check scripted.jac --print-sigs
-  t : forall a. () ->{Console@task} Result Text (List (Pair a Real))
-  _ : forall a. Result Text (List (Pair a Real))
+  t : () ->{Console@task} Result Text (List (Pair Bool Real))
+  _ : Result Text (List (Pair Bool Real))
   $ jacquard run scripted.jac
   error[E0814]: The program requires an effect that was not granted
     Cause: This program requires console [world/low] — talk to the process terminal, which is not granted (performed via `t`).
@@ -105,7 +105,7 @@ cannot hide it from the root grant (W0802 warns about such a handler).
   quiet.jac:1:7-5:2: warning[W0802]: A handler does not handle the operations of a task or an inference model it encloses
     Cause: this handler handles `console`, but a task (an async.spawn child or an async.scope body) or an inference model (a dist.sample-lw thunk) in its body also performs `console` and leaves it unhandled; a task or a model runs on a fresh continuation, so those operations go to the root grant, not to this handler, and the row keeps `console@task`
     Next step: Handle the effect inside the thunk passed to async.spawn, async.scope or dist.sample-lw, or grant it at the root.
-  t : forall a. () ->{Console@task} List (Pair a Real)
+  t : () ->{Console@task} List (Pair Bool Real)
 
 A model that runs a scope whose child samples keeps `Dist@task`: that sample
 goes to the root, not to the driver.
@@ -114,7 +114,7 @@ goes to the root, not to the driver.
   > t() = dist.sample-lw(fn () -> { let r = async.scope(fn () -> sample(Bernoulli(0.5))); sample(Bernoulli(0.5)) }, 2, 1)
   > EOF
   $ jacquard check scope-sample.jac --print-sigs
-  t : forall a. () ->{Dist@task} List (Pair a Real)
+  t : () ->{Dist@task} List (Pair Bool Real)
 
 `async.scope` cannot run inside an inference model: no driver has a scheduler.
 Every driver stops with E0922 when the model opens a scope.
@@ -124,8 +124,8 @@ Every driver stops with E0922 when the model opens a scope.
   > t()
   > EOF
   $ jacquard check scope.jac --print-sigs
-  t : forall a. () ->{} List (Pair (TaskResult a) Real)
-  _ : forall a. List (Pair (TaskResult a) Real)
+  t : () ->{} List (Pair (TaskResult Bool) Real)
+  _ : List (Pair (TaskResult Bool) Real)
   $ jacquard run scope.jac
   error[E0922]: async.scope cannot run inside an inference model.
     Cause: the model opened async.scope; an inference driver (dist.sample-lw, jacquard infer, a model document's enumerate or lw result, or a posterior builtin) runs the model on a fresh continuation without a scheduler, so a scope cannot run inside it
@@ -280,8 +280,8 @@ by the parent's handler:
   > t()
   > EOF
   $ jacquard check g27.jac --print-sigs
-  t : forall a. () ->{} (List (Pair a Real), List Int)
-  _ : forall a. (List (Pair a Real), List Int)
+  t : () ->{} (List (Pair Bool Real), List Int)
+  _ : (List (Pair Bool Real), List Int)
   $ jacquard run g27.jac
   (cons(mk-pair(false, 0.75), cons(mk-pair(true, 0.25), nil)), cons(1, nil))
 
@@ -296,11 +296,11 @@ the typed outcome and `gen` wrappers:
   > (inside(), nested(), in-scope(), typed())
   > EOF
   $ jacquard check fine.jac --print-sigs
-  inside : forall a. () ->{} List (Pair (a, List Int) Real)
-  nested : forall a. () ->{} List (Pair a Real)
-  in-scope : forall a. () ->{} TaskResult (List (Pair a Real))
-  typed : forall a. () ->{} Result InferenceFailureV1 (InferencePosteriorV1 a)
-  _ : forall a b c d. (List (Pair (a, List Int) Real), List (Pair b Real), TaskResult (List (Pair c Real)), Result InferenceFailureV1 (InferencePosteriorV1 d))
+  inside : () ->{} List (Pair (Bool, List Int) Real)
+  nested : () ->{} List (Pair Bool Real)
+  in-scope : () ->{} TaskResult (List (Pair Bool Real))
+  typed : () ->{} Result InferenceFailureV1 (InferencePosteriorV1 Bool)
+  _ : (List (Pair (Bool, List Int) Real), List (Pair Bool Real), TaskResult (List (Pair Bool Real)), Result InferenceFailureV1 (InferencePosteriorV1 Bool))
   $ jacquard run fine.jac
   (cons(mk-pair((false, cons(1, nil)), 1.0), nil), cons(mk-pair(false, 1.0), nil), done(cons(mk-pair(false, 1.0), nil)), ok(inference-posterior-v1(cons(mk-pair(false, 0.25), cons(mk-pair(false, 0.25), cons(mk-pair(false, 0.25), cons(mk-pair(true, 0.25), nil)))), inference-metadata-v1(inference-likelihood-weighting-v1, false, some(1), 4, 4))))
 
@@ -315,7 +315,7 @@ row variable for both rows merges them, so a handler around its use is refused
   > EOF
   $ jacquard check wrappers.jac --print-sigs
   lw : forall a | e e1. (() ->{Dist | e1} a) ->{| e} List (Pair a Real)
-  ok : forall a. () ->{} (List (Pair a Real), List Int)
+  ok : () ->{} (List (Pair Bool Real), List Int)
   $ cat > one-var.jac <<'EOF'
   > lw : forall a | e. (() ->{Dist | e} a) ->{| e} List (Pair a Real)
   > lw(m) = dist.sample-lw(m, 4, 1)
@@ -335,7 +335,7 @@ driver: an operation it does not handle reaches the handler around it.
   > t()
   > EOF
   $ jacquard check enumerate.jac --print-sigs
-  t : forall a. () ->{} (List (Pair a Real), List Int)
-  _ : forall a. (List (Pair a Real), List Int)
+  t : () ->{} (List (Pair Bool Real), List Int)
+  _ : (List (Pair Bool Real), List Int)
   $ jacquard run enumerate.jac
   (cons(mk-pair(true, 0.5), cons(mk-pair(false, 0.5), nil)), cons(1, nil))

@@ -184,7 +184,10 @@ policy values and canonical hashes needed to replay a counterexample.
 
 Shrinking follows Hypothesis rather than QuickCheck: shrink the choices, never the
 value. The sampling handler already sits between the generator and its randomness,
-so it records the choice log (which distribution, which outcome) as it runs. On
+so it records the choice log (which distribution, which outcome) as it runs. The
+property driver owns its property's `sample` and `observe` even when the run
+grants `dist`: a root grant never answers them, so every draw is logged and
+replayable. On
 failure, the shrinker edits the log toward canonical simplicity (delete spans,
 move `UniformInt` choices toward the low bound, prefer earlier `Categorical`
 entries, prefer `False`) and replays the generator with logged choices forced,
@@ -324,9 +327,14 @@ are content, so one developer's local run warms the team's CI.
 
 The driver version covers native execution semantics that are not represented
 by a Jacquard definition hash. SC.17 advances it from `warp-v1` to `warp-v2`
-because nested-scope cancellation changed in the shared scheduler driver.
-Existing `warp-v1` files remain harmless in the result store but cannot satisfy
-a `warp-v2` lookup.
+because nested-scope cancellation changed in the shared scheduler driver. The
+driver-owns-Dist correction advances it to `warp-v3`: a property's `sample`
+and `observe` are the property driver's even when the run grants `dist`
+(`--allow dist`), so a root grant can no longer answer a property's draws, and
+a verdict cached under the old rule (for example a false exhaustive proof
+recorded with `--allow dist`) must not be served. Existing `warp-v1` and
+`warp-v2` files remain harmless in the result store but cannot satisfy a
+`warp-v3` lookup.
 
 Coverage gets the same semantic treatment: the interpreter records which
 definition hashes were evaluated under test, and `jacquard test --coverage` reports

@@ -198,7 +198,7 @@ policy file and compares every run with run 1 under it:
 The policy identity is the comparison's name: two comparisons are the same
 comparison exactly when their policy identities are equal. Warp relational
 lanes (`SameUnder`) do not select a policy yet: they keep the frozen
-result-values projection, which the `warp-v2` cache-key version already names.
+result-values projection, which the `warp-v3` cache-key version already names.
 When a lane gains policy selection, its relational cache key must include the
 policy identity alongside the variation fields.
 
@@ -208,7 +208,7 @@ policy identity alongside the variation fields.
 |---|---|
 | `run-transcript-v1` | none: same bytes, same parser, same callers |
 | `jacquard relate` without `--policy` | none: same projections, output and exits |
-| Warp relational lanes and cache keys | none: their projection is fixed and named by `warp-v2` |
+| Warp relational lanes and cache keys | none: their projection is fixed and named by `warp-v3` |
 | kernel, HASH_V0, stores, schedule traces | none |
 | diagnostics | E1005 (policy invalid or refused), E1006 (transcript invalid, or recorded under another policy), E1007 (runs cannot be called equal under a policy) |
 

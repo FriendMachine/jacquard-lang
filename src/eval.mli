@@ -362,9 +362,13 @@ type capture =
   | COp of { op : Hash.t; name : string; args : Value.t list; kont : captured_kont }
       (** A terminal value or an unhandled root operation with its mode-aware continuation. *)
 
-val run_state_capturing : ctx -> state -> (capture, Runtime_err.t) result
-(** [run_state_capturing ctx state] validates [state], then runs to a value or the first unhandled
-    root operation. Runtime failures are returned. *)
+val run_state_capturing : ?driver_ops:Hash.t list -> ctx -> state -> (capture, Runtime_err.t) result
+(** [run_state_capturing ?driver_ops ctx state] validates [state], then runs to a value or the first
+    unhandled root operation. An operation in [driver_ops] (an inference driver's own operations;
+    default none) is captured before any root handler registered for it, so a root grant never
+    answers it during this run; other granted operations still run their root handlers. Every
+    capture assigns the set for its own duration and restores the outer one, so nested drivers
+    compose and a capture without [driver_ops] owns none. Runtime failures are returned. *)
 
 val resume_captured_state : ctx -> captured_kont -> Value.t -> (state, Runtime_err.t) result
 (** [resume_captured_state ctx kont value] validates [value] and constructs a resumed state. A Multi
@@ -428,10 +432,11 @@ val fresh_validated_state : ctx -> validated_state -> validated_state
     is returned without restoring either graph and remains foreign for the guarded runner. *)
 
 val run_validated_state_capturing :
-  ctx -> validated_state -> (validated_capture, Runtime_err.t) result
-(** [run_validated_state_capturing ctx state] runs a sealed state without rescanning immutable
-    syntax when [ctx] is its validating context. Cross-context use returns E0907; memo/native
-    results remain guarded and runtime failures are returned. *)
+  ?driver_ops:Hash.t list -> ctx -> validated_state -> (validated_capture, Runtime_err.t) result
+(** [run_validated_state_capturing ?driver_ops ctx state] runs a sealed state without rescanning
+    immutable syntax when [ctx] is its validating context; [driver_ops] is as for
+    {!run_state_capturing}. Cross-context use returns E0907; memo/native results remain guarded and
+    runtime failures are returned. *)
 
 val resume_validated_state :
   ctx -> validated_captured_kont -> Value.t -> (validated_state, Runtime_err.t) result

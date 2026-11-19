@@ -1177,6 +1177,7 @@ jq_value jq_i_pmf(jq_rt *rt, const jq_value *a) {
  * total, and sorted (probability descending, rendering ascending). The
  * model runs against an EMPTY handler stack (the interpreter drives a
  * fresh state machine), so outer in-language handlers never see its ops;
+ * the driver owns sample and observe ahead of a root dist grant, other
  * grants still apply, and a root-reaching op renders with the
  * "(not handled during inference)" pseudo-effect. */
 
@@ -1239,8 +1240,9 @@ typedef struct lw_state {
   int possible; /* no exact zero observation factor yet (INF.1) */
 } lw_state;
 
-/* jq_perform's root interception during a weighted run (after grants —
-   the interpreter's run_until_op captures ops only at the true root) */
+/* jq_perform's root interception during a weighted run (before grants —
+   the interpreter's run_until_op captures the driver's own ops ahead of
+   any root handler) */
 jq_value jq_lw_sample(jq_rt *rt, jq_value dv) {
   lw_state *st = (lw_state *)rt->lw;
   if (!jq_is_ptr(dv) || jq_block_of(dv)->tag != JQ_CON) {
@@ -1313,8 +1315,9 @@ jq_value jq_i_dist_sample_lw(jq_rt *rt, const jq_value *a) {
   if (!runs) jq_runtime_error("jacquard runtime: out of memory");
   /* each run is the interpreter's fresh state machine: outer in-language
      handlers are hidden behind the search floor (their entries untouched),
-     grants still apply, sample/observe intercept at the root through
-     rt->lw, and anything else root-reaching renders with the pseudo-effect.
+     sample/observe intercept at the root through rt->lw ahead of a dist
+     grant, other grants still apply, and anything else root-reaching
+     renders with the pseudo-effect.
      Saving the previous floor/lw makes nested drivers compose. */
   uint32_t saved_floor = rt->hs_floor;
   void *saved_lw = rt->lw;

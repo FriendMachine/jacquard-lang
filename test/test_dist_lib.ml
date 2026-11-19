@@ -182,6 +182,77 @@ let test_root_sampling_handler () =
       Alcotest.failf "observe at root must be the D7 defect, got %s"
         (match r with Ok v -> Value.show v | Error e -> Runtime_err.to_string e)
 
+(* An inference driver owns its model's sample and observe: with the root dist grant installed, a
+   driver gives exactly the grant-free result, its own seed decides, and a nested driver composes.
+   Before the correction the root sampler answered every draw (one enumerated path, the root
+   stream instead of the driver's seed) and the root observe stub failed the run. *)
+let test_driver_owns_dist_under_grant () =
+  let plain_store, plain = Eval_support.make_prelude_ctx () in
+  let granted_store, granted = Eval_support.make_prelude_ctx () in
+  (match Prelude.grant granted "dist" ~out:ignore ~seed:1 ~infer_cache:None with
+  | Ok () -> ()
+  | Error ds -> Eval_support.fail_diags "grant dist" ds);
+  let state store src () =
+    match Reader.parse_one ~file:"model.jqd" src with
+    | Error ds -> Eval_support.fail_diags "parse" ds
+    | Ok f -> (
+        match
+          Result.bind (Kernel.expr_of_form f) (Resolve.resolve_expr (Store.names_view store))
+        with
+        | Error ds -> Eval_support.fail_diags "resolve" ds
+        | Ok e -> Eval.expr_state e)
+  in
+  let render (p : Infer_dist.posterior) =
+    String.concat "; "
+      (List.map (fun (v, pr) -> Printf.sprintf "%s %.17g" (Value.show v) pr) p.Infer_dist.entries)
+  in
+  let coin = "(app (var sample) (app (var bernoulli) (lit 0.5)))" in
+  let enumerate ctx store =
+    match Infer_dist.enumerate ctx (state store coin ()) with
+    | Ok p -> render p
+    | Error ds -> Eval_support.fail_diags "enumerate" ds
+  in
+  Alcotest.(check string)
+    "enumerate under the grant explores both paths" "false 0.5; true 0.5"
+    (enumerate granted granted_store);
+  Alcotest.(check string)
+    "enumerate is unchanged by the grant" (enumerate plain plain_store)
+    (enumerate granted granted_store);
+  let observed =
+    "(let nonrec (pvar c) (app (var sample) (app (var bernoulli) (lit 0.5))) (let nonrec (pwild) \
+     (app (var observe) (app (var bernoulli) (match (var c) (clause (pcon true) (lit 0.9)) (clause \
+     (pcon false) (lit 0.1)))) (var true)) (var c)))"
+  in
+  let lw ctx store seed =
+    match Infer_dist.likelihood_weighting ctx ~seed ~samples:50 (state store observed) with
+    | Ok p -> render p
+    | Error ds -> Eval_support.fail_diags "likelihood weighting" ds
+  in
+  Alcotest.(check string)
+    "likelihood weighting is unchanged by the grant" (lw plain plain_store 42)
+    (lw granted granted_store 42);
+  Alcotest.(check bool)
+    "the driver's seed decides" false
+    (String.equal (lw granted granted_store 42) (lw granted granted_store 7));
+  let nested =
+    "(app (var dist.sample-lw) (lam () (let nonrec (pvar i) (app (var dist.sample-lw) (lam () (app \
+     (var sample) (app (var uniform-int) (lit 1) (lit 6)))) (lit 3) (lit 7)) (tuple (var i) (app \
+     (var sample) (app (var bernoulli) (lit 0.5)))))) (lit 4) (lit 42))"
+  in
+  let run ctx store =
+    match Eval_support.eval_with ctx store nested with
+    | Ok v -> Value.show v
+    | Error e -> Alcotest.failf "nested drivers failed: %s" (Runtime_err.to_string e)
+  in
+  Alcotest.(check string)
+    "nested drivers are unchanged by the grant" (run plain plain_store) (run granted granted_store);
+  (* outside a driver the grant still answers: a root draw is a seeded sample *)
+  match Eval_support.eval_with granted granted_store coin with
+  | Ok v when List.mem (Value.show v) [ "true"; "false" ] -> ()
+  | r ->
+      Alcotest.failf "a root draw must still reach the grant, got %s"
+        (match r with Ok v -> Value.show v | Error e -> Runtime_err.to_string e)
+
 let test_lw_uniform_int () =
   (* LW over a uniform-int model stays in bounds and roughly uniform *)
   let state () =
@@ -292,6 +363,8 @@ let suite =
     Alcotest.test_case "sampling bounds and determinism" `Quick test_sampling_bounds_and_determinism;
     Alcotest.test_case "root sampling handler; observe is a defect" `Quick
       test_root_sampling_handler;
+    Alcotest.test_case "inference drivers own Dist under a root grant" `Quick
+      test_driver_owns_dist_under_grant;
     Alcotest.test_case "likelihood weighting over uniform-int" `Quick test_lw_uniform_int;
     Alcotest.test_case "dist.sample-lw builtin" `Quick test_sample_lw_builtin;
     Alcotest.test_case "dist.sample-lw unchecked backstop (E0902, E0922)" `Quick

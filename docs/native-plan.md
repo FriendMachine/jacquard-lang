@@ -518,8 +518,9 @@ completion cache needs to READ its readable entry format back (a reader
 port, task 73's territory), so native binaries reject `--infer-cache`
 with an up-front E1103 instead of silently not caching. Also as built:
 `dist.sample-lw` isolates each run against an empty in-language handler
-stack (the interpreter drives a fresh state machine per model run) and
-renders root-reaching ops with the "(not handled during inference)"
+stack (the interpreter drives a fresh state machine per model run), owns
+its model's `sample` and `observe` ahead of a root `dist` grant (other
+grants still apply), and renders root-reaching ops with the "(not handled during inference)"
 pseudo-effect; the root sampler seeds from `--seed` (both spellings) or
 OS entropy, exactly one jq_rng_float per draw with no split; and the DST
 battery exposed a real chain-depth bug in run_from (un-entered frames
@@ -707,7 +708,7 @@ each is pinned:
 | Arithmetic | div/mod by zero; LW sample-count and E0901 | check.sh fatal modes; native-effects.t |
 | Io | fs grant failures ("io error: path: strerror") | native.t fsmiss |
 | Unhandled | ungranted grantable ops are E0814 at the manifest first; the runtime rendering fires for hidden-handler inference runs and is unit-pinned | check.sh unhandled-op; native-effects.t lw-outer-op |
-| Observe_at_root | --allow dist observe (E0904; E0902-flattened inside LW) | native-effects.t |
+| Observe_at_root | --allow dist observe at the root (E0904); inside LW the model's observe is the driver's, intercepted before the grant | native-effects.t; driver-dist-grant.t |
 | Match_failure | REACHABLE via row erasure (an op payload type does not flow to its handler, docs/stdlib.md — a handler can resume with a value the site's exhaustive match never expected); also unit-pinned defensively | gauntlet e04; check.sh match-fail |
 | Arity | REACHABLE via row erasure (a smuggled closure of the wrong arity) — review round 1 corrected the first draft's "typed away" claim | gauntlet e03 |
 | Type_error | REACHABLE via row erasure, both intrinsic and grant legs; the probe caught a live wording divergence in text.concat (the interpreter's text2 wrapper uses the generic rendering), fixed and pinned | gauntlet e02; native-effects.t erasure-grant |

@@ -31,7 +31,7 @@ let prelude_op ctx op name =
   | Some { Resolve.hash; _ } -> Hash.equal hash op
   | None -> false
 
-let version = "warp-v2"
+let version = "warp-v3"
 
 type verdict = Pass of int | Fail of { soft : string list; hard : string option } | NoChecks
 
@@ -371,7 +371,7 @@ let drive_prop ctx ~rng ~(forced : int list) (thunk : Value.t) :
   let log = ref [] in
   let entries = ref [] in
   let rec go state forced =
-    match Eval.run_state_capturing ctx state with
+    match Eval.run_state_capturing ~driver_ops:(Infer_dist.driver_ops ctx) ctx state with
     | Error e -> Error (`Runtime (Runtime_err.to_string e))
     | Ok (Eval.CValue _) ->
         let es = List.rev !entries in
@@ -543,7 +543,7 @@ let run_prop_exhaustive ctx ~budget (thunk : Value.t) : (verdict * string, Diag.
         raise
           (Budget
              (Printf.sprintf "%d explorations (cap %d), last at %s" !branches budget !last_site));
-      match Eval.run_state_capturing ctx state with
+      match Eval.run_state_capturing ~driver_ops:(Infer_dist.driver_ops ctx) ctx state with
       | Error e -> Error (Runtime_err.to_string e)
       | Ok (Eval.CValue _) ->
           incr verified;

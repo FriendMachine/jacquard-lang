@@ -100,6 +100,20 @@ Notes for the next release's upgrade section, collected as changes land:
   `(() ->{Dist | e} a) ->{| e} List (Pair a Real)`) now joins the two rows, so
   a handler around a use of it is refused with E0838; give it two row
   variables, as the inferred signature does.
+- **Inference drivers own Dist under `--allow dist` (correction).** With a
+  root `dist` grant (`--allow dist`, or `--dry-run`), `dist.sample-lw`,
+  `dist.sample-lw-weights-v1`, `dist.sample-lw-v1`, a model document's
+  `enumerate` and `lw` results, `posterior.run-exact-v1`,
+  `posterior.sample-evidence-v1` and Warp properties now give the same result
+  as without the grant: the driver's (or document's, or configuration's) seed
+  decides, a model's `observe` no longer fails with E0902, exact enumeration
+  explores every path, and a root draw after a driver call follows `--seed`
+  as if the driver were absent. Native `dist.sample-lw` binaries change the
+  same way. Outputs of programs that combined a dist grant with one of these
+  drivers therefore change. `jacquard run --record` with the grant now
+  records a driver's draws as captured steps (`result missing`), as it already
+  did without the grant. The Warp cache tag moves from `warp-v2` to `warp-v3`,
+  so every cached Warp verdict is recomputed once. No identity changes.
 - **Bernoulli and UniformInt have element types (soundness fix).** A
   construction of the prelude's `Bernoulli(p)` is now a `Distribution Bool` and
   of `UniformInt(lo, hi)` a `Distribution Int`, matching what sampling, `pmf`,

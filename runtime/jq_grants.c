@@ -218,13 +218,11 @@ jq_value jq_g_dist_sample(jq_rt *rt, const jq_value *args) {
 }
 
 jq_value jq_g_dist_observe(jq_rt *rt, const jq_value *args) {
+  (void)rt;
   (void)args;
-  /* run_cmd renders Observe_at_root as E0904; inside a weighted run the LW
-     driver flattens it to an E0902 diagnostic first (both exit 2) */
-  if (rt->lw)
-    jq_diagnostic_fail(2, "E0902", "Probabilistic inference stopped on a runtime failure.",
-                       "observe reached the sampling root handler; observation requires an inference driver (use jacquard infer)",
-                       "Correct the reported model runtime failure and rerun inference.");
+  /* run_cmd renders Observe_at_root as E0904. Inside a weighted run the LW
+     driver intercepts observe before any grant (jq_perform), so this is
+     reached only outside an inference driver. */
   jq_diagnostic_fail(2, "E0904", "Observation is invalid at the sampling root",
                      "observe reached the sampling root handler; observation requires an inference driver (use jacquard infer)",
                      "Move the observation under an inference handler.");

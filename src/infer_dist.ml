@@ -14,11 +14,13 @@
       ancestrally from the seeded splittable PRNG (single resume); [observe] multiplies the run's
       weight; report the normalized empirical posterior.
 
-    Mechanism: both algorithms drive the machine through {!Eval.run_state_capturing}. When an
-    unhandled [sample] or [observe] reaches the root, the algorithm receives the whole remaining
-    continuation as immutable data and resumes it per its semantics — enumeration invokes the SAME
-    continuation once per support element (multi-shot), likelihood weighting exactly once per run.
-    The model file is identical under both algorithms; only the driver changes. *)
+    Mechanism: both algorithms drive the machine through {!Eval.run_state_capturing}. When a
+    [sample] or [observe] reaches the root, the algorithm receives the whole remaining continuation
+    as immutable data and resumes it per its semantics — enumeration invokes the SAME continuation
+    once per support element (multi-shot), likelihood weighting exactly once per run. The model file
+    is identical under both algorithms; only the driver changes. The driver owns these two
+    operations ({!driver_ops}): a root [dist] grant does not answer them inside a driver run, while
+    every other root grant still reaches the model. *)
 
 open Value
 
@@ -234,15 +236,27 @@ type validated_outcome =
       resume : Eval.validated_captured_kont;
     }
 
+(** [driver_ops ctx] is the prelude's [sample] and [observe] by their frozen identities: the
+    operations an inference driver owns. A driver captures them before any root handler, so a root
+    [dist] grant ([--allow dist], [--dry-run]) never answers a model's draw or observation; other
+    root grants still reach the model. A store without them yields only those present. *)
+let driver_ops (ctx : Eval.ctx) =
+  List.filter_map
+    (fun name ->
+      Option.map
+        (fun { Resolve.hash; _ } -> hash)
+        (Prelude_identity.lookup_kind (Eval.store ctx) name Resolve.KOp))
+    [ "sample"; "observe" ]
+
 let run_until_op (ctx : Eval.ctx) (state : Eval.state) : (outcome, Runtime_err.t) result =
-  match Eval.run_state_capturing ctx state with
+  match Eval.run_state_capturing ~driver_ops:(driver_ops ctx) ctx state with
   | Ok (Eval.CValue v) -> Ok (Done v)
   | Ok (Eval.COp { op; name; args; kont }) -> Ok (Op { op; name; args; resume = kont })
   | Error e -> Error e
 
 let run_until_op_validated (ctx : Eval.ctx) (state : Eval.validated_state) :
     (validated_outcome, Runtime_err.t) result =
-  match Eval.run_validated_state_capturing ctx state with
+  match Eval.run_validated_state_capturing ~driver_ops:(driver_ops ctx) ctx state with
   | Ok (Eval.VCValue value) -> Ok (Validated_done value)
   | Ok (Eval.VCOp { op; name; args; kont }) -> Ok (Validated_op { op; name; args; resume = kont })
   | Error e -> Error e

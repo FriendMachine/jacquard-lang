@@ -667,6 +667,107 @@ still asks for every constructor (a `Bernoulli` arm on a `Distribution Int` is
 accepted but never taken). The prelude's `Categorical` field is unlabeled; the
 `values:` label above is illustrative.
 
+Drawing. Under the root sampler and every built-in driver, a draw produces an
+element of the support or fails. A user handler that answers `sample` itself
+receives the distribution value as it is and decides what to resume with.
+
+- An empty `Categorical([])` is refused wherever a distribution is recognised
+  (the root sampler, `support`, `pmf`, every inference driver, Warp and native
+  code), like an empty `UniformInt` range: `arithmetic error: categorical
+  support is empty`. `jacquard infer`, model documents and the
+  likelihood-weighting drivers report it as E0902; the in-language
+  `dist.enumerate` and `dist.enumerate-v1` stop with that arithmetic error,
+  which has no code.
+- The root sampler (`--allow dist`), Warp's sampled and exhaustive lanes and
+  `VaryValue` refuse a categorical with a negative, NaN or infinite weight, or
+  whose weights sum to infinity or to zero, with an arithmetic error that names
+  the first offending weight or the sum. A NaN weight is written `nan`
+  whatever its sign. Warp's exhaustive lane reports the refusal as E0902, its
+  code for a runtime failure during exhaustive execution.
+- Whether finite, nonnegative weights sum to infinity is decided by their sum
+  in ascending order, which is the same for every order of the entries. (A sum
+  in entry order can round differently: the largest float plus two weights of
+  a quarter of its ulp stays finite in one order and overflows in another.)
+  A draw keeps its total in entry order, so valid draws are unchanged; when
+  only the entry-order total overflows, the draw uses the ascending sum. Every
+  categorical draw uses this one total (the root sampler, every driver, Warp's
+  sampled lane, `jacquard review`'s sampled cases and native code), so they
+  pick the same entry for the same uniform. `jacquard review` refuses a
+  Distribution domain by the same rule (E1012), and also when merging equal
+  values makes a weight or the sum overflow, since sampled cases draw from the
+  merged support; the merged check applies to exhaustive reviews too. When the
+  support's entry-order sum is not finite or exceeds half the largest float,
+  each value's weights are merged in ascending order, so the merged weights
+  and the refusal do not depend on the order of the entries.
+- Enumeration and likelihood weighting refuse to draw from a categorical with
+  a negative, NaN or infinite weight, or whose finite weights summed in
+  ascending order overflow, with E0917 at the draw. The refusal does not
+  depend on what the model observes afterwards or on the order of the entries:
+  the reason is non-finite when any weight is NaN or infinite, else negative
+  mass when any weight is negative, else non-finite (the ascending sum
+  overflows). `jacquard infer enumerate`, `jacquard infer lw`, `jacquard
+  dist-diff` and a model document's `enumerate` and `lw` results report it as
+  that numeric failure (a model document says `numerical`). The in-language
+  `dist.enumerate`, `dist.enumerate-v1`, `dist.sample-lw-v1` and
+  `dist.sample-lw-weights-v1` stop the program with the E0917 diagnostic
+  rather than return an `err` value, because the prelude enumerators draw
+  through `support`, which refuses the same weights. `jacquard infer`, the
+  released `dist.sample-lw` and `dist.sample-lw-v1` report an inner driver's
+  refusal as their own E0902 runtime failure, with the E0917 diagnostic as the
+  cause; the in-language enumerators `dist.enumerate` and `dist.enumerate-v1`
+  pass the inner E0917 through unwrapped, as they do any runtime failure. `posterior.sample-evidence-v1` runs the
+  released `dist.sample-lw`, so it reports invalid weights as E1547 with the
+  E0902 runtime failure as the cause.
+- Every driver that reaches such a draw refuses it with E0917, but not every
+  driver reaches the same draws. Likelihood weighting refuses only the sites
+  its runs draw: a site behind `sample(Bernoulli(0.001))` may never be reached
+  in a few runs, and the posterior comes back. Enumeration stops at the first
+  failure in its search order, which follows each support's entry order. With
+  several invalid sites the reason can therefore differ between drivers (and
+  between seeds), and an earlier valid categorical's entry order can decide
+  whether enumeration stops on a later invalid draw (E0917) or on a runtime
+  failure in another branch (E0902).
+- A zero-mass draw (every weight zero) is not a numeric failure: enumeration
+  prunes every branch, and likelihood weighting makes the run impossible
+  (E0901 when every run is). The released `dist.sample-lw` weighs a zero-mass
+  run zero and stops on invalid weights with E0902.
+- A run that is already impossible (an exact zero observation, or a zero-mass
+  draw) is not refused at a later invalid draw, since enumeration never
+  reaches a site behind an exact zero factor; the run draws there over the
+  same total as any draw and is dropped when it ends. That is the released
+  driver's pick except when only the entry-order total overflows: the draw
+  then uses the ascending sum where the released driver fell through to the
+  last entry, so a run that stopped on that entry (an E0902 division by zero,
+  say) now ends impossible (E0901), as enumeration reports. The released
+  `dist.enumerate` explores zero-weight branches too, so it does refuse such a
+  site.
+- `pmf` returns a non-empty categorical's raw weights summed, invalid ones
+  included, and is not normalized; an observation of a negative or non-finite
+  weight is therefore a negative or non-finite path weight, not a refusal.
+  `support` returns raw weights for a categorical whose weights can be drawn
+  from, zero-mass included, and refuses the others (E0917). The prelude's
+  `dist.pmf` folds over `support`, so unlike the `pmf` builtin it stops with
+  E0917 on such weights, although it draws nothing.
+- The exact risk boundary (`posterior.run-exact-v1`) keeps its own rule: a
+  sample or observe whose support has a negative or non-finite weight is
+  E0911, reported as E1544. It accepts finite weights whose total overflows
+  (a model sampling `[(Low, 1e308), (High, 1e308)]` gets belief 0.5/0.5),
+  while `posterior.sample-evidence-v1` refuses them with E1547.
+- Known limits. `jacquard infer enumerate`, `jacquard dist-diff`, a model
+  document's `enumerate` result and `dist.enumerate-v1` normalise the
+  posterior by summing path weights in exploration order, which follows entry
+  order. A categorical the draw accepts whose total is within rounding of the
+  largest float can therefore fail as a non-finite total in some entry orders
+  and not in others, while likelihood weighting returns its posterior in every
+  order. `jacquard infer enumerate` and `jacquard dist-diff` then report E0917
+  ("a path weight or the total mass is not finite") and a model document's
+  `enumerate` result says `numerical`; `dist.enumerate-v1` returns
+  `err(inference-numeric-failure-v1(inference-non-finite-v1, …))`.
+  A draw scales one uniform by the total, so a total that is a few subnormals
+  (`[("a", 5e-324), ("b", 0.0)]`) can round the scaled uniform up to the total
+  and fall through to the last entry, a zero-weight one included; fixing this
+  would move the stream of valid categoricals.
+
 The inference handlers are signature-only interface documentation; their
 implementations live in the prelude and are not duplicated in this block.
 
@@ -723,7 +824,7 @@ The classification applies these checks in order, and the first that matches dec
 5. the total zero → `InferenceUnderflowV1`
 6. otherwise, the normalized posterior
 
-A path survives unless one of its factors is exactly zero; a run survives unless an observation factor is exactly zero or it draws from a categorical with no mass. Underflow is therefore separate from impossibility.
+A path survives unless one of its factors is exactly zero; a run survives unless an observation factor is exactly zero or it draws from a categorical with no mass. Underflow is therefore separate from impossibility. A draw from a categorical with a negative or non-finite weight (or weights whose sum overflows) never reaches this classification: both drivers refuse it at the draw with E0917 (see Drawing above).
 
 When `dist.enumerate-v1` tries a terminal path beyond its budget, the result is
 `InferenceExhaustedV1`, never a partial posterior. Sampled posteriors are
@@ -1460,7 +1561,8 @@ seed 0) let the root sampler answer `sample` and the root `observe` stub answer
 `observe` inside `dist.sample-lw`, `dist.sample-lw-weights-v1`,
 `dist.sample-lw-v1`, a model document's `enumerate` and `lw` results, the
 `posterior.run-exact-v1` and `posterior.sample-evidence-v1` builtins and Warp
-properties, in the interpreter and (for `dist.sample-lw`) in native binaries.
+properties, in the interpreter and (for `dist.sample-lw`,
+`dist.sample-lw-weights-v1` and `dist.sample-lw-v1`) in native binaries.
 The driver's seed was ignored, any `observe` failed with E0902, exact
 enumeration explored one path, the driver consumed the root stream, and Warp
 could report and cache a false exhaustive proof. A driver now owns its model's
@@ -1469,6 +1571,43 @@ grant still answers draws outside a driver (including a task's `Dist@task`
 draw), and other root grants still reach a model. No identity changes; the
 Warp cache tag moves from `warp-v2` to `warp-v3`, so earlier cached verdicts
 are not reused.
+
+**Sampling a `Categorical` with no valid mass resumed with a placeholder.**
+Before this correction, the draw ignored entries it could not select: the root
+sampler returned `()` for `Categorical([])` and the last entry for a zero-mass
+list. It never selected a negative, NaN or infinite entry on its merits, but
+when no entry was selected it fell through to the last one, whatever that
+entry's weight: for `[("a", 1e308), ("b", 1e308), ("c", -1.0)]`, whose total
+overflows, it could return `"c"`. The released `dist.sample-lw` returned
+`[((), 1.0)]` for an empty list and a full-mass posterior on the last entry for
+a zero-mass one. `jacquard infer lw`, a model document's `lw` result and
+`dist.sample-lw-v1` returned confident posteriors from invalid weights, and
+enumeration could give one too: a later observation pruned a negative branch,
+and two single-entry negative sites multiplied to a positive path weight.
+Warp's sampled lane crashed on an empty list and passed on the others; its
+exhaustive lane passed vacuously over zero mass.
+
+Now an empty `Categorical` is refused wherever it is recognised (so
+`support(Categorical([]))` and the released `dist.enumerate` stop instead of
+returning `nil`, `jacquard infer enumerate` reports E0902 instead of E0901, and
+`posterior.run-exact-v1` reports `E1544 … E0911` instead of `E1545`), the
+samplers refuse invalid weights, and enumeration and likelihood weighting
+refuse a draw from invalid weights with E0917 at the draw (see
+[Dist](#dist)), so `support` no longer returns such weights. No identity
+changes; the Warp cache tag moves from `warp-v3` to `warp-v5`, and the
+`jacquard dist-diff` posterior cache key from `dist-diff-v2` to `dist-diff-v3`,
+so neither serves a result computed before invalid draws were refused. Known
+limit: a likelihood-weighting run that is already impossible keeps executing
+(the native runtime cannot abandon a run midway). A zero-mass draw resumes it
+with the categorical's last entry, and a later draw from invalid weights
+resumes it with the inverse-CDF pick over the shared draw total (the ascending
+sum when only the entry-order total overflows, so such a run can now end
+impossible where the released driver's last-entry pick stopped it with E0902). Any runtime failure later in
+such a run still stops the program where enumeration, which never reaches it,
+reports E0901: a model that inspects such a value can stop with E0902, and so
+can one that calls an inner driver that refuses its own draw (the
+likelihood-weighting driver reports E0902 with the inner E0917 as the cause). A run that is still possible no longer resumes
+after an invalid draw: it stops there in both engines.
 
 **`Map k v` displays as `map.t k v`.** Elaborated signatures print the store name of the
 wrapper type; the doc's display-syntax `Map k v` is the same type.

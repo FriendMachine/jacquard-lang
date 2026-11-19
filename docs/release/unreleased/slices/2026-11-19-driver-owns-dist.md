@@ -9,8 +9,8 @@ explored one path and was labeled complete, and its `lw` result ignored
 `seed=`; `posterior.run-exact-v1` produced wrong exact risk weights and
 `posterior.sample-evidence-v1` ignored its configured seed; Warp reported
 unreplayable counterexamples and a false exhaustive proof, which its cache
-then served without the grant. Native `dist.sample-lw` binaries had the same
-ordering. In-language handler drivers (`dist.enumerate`,
+then served without the grant. Native binaries running `dist.sample-lw`,
+`dist.sample-lw-weights-v1` or `dist.sample-lw-v1` had the same ordering. In-language handler drivers (`dist.enumerate`,
 `dist.enumerate-v1`) and `jacquard infer` were unaffected.
 
 The checked type already discharges Dist at the driver, so the driver now
@@ -18,7 +18,10 @@ owns it. The evaluator context carries `driver_ops`, the operations the
 capturing driver owns; every capture assigns it for its own duration and
 restores the outer value (`Eval.run_state_capturing ?driver_ops`,
 `Eval.run_validated_state_capturing ?driver_ops`). While a driver capture is
-active, an operation in the set is captured before any root handler. The
+active, an operation in the set is captured before any root handler: the
+`dist` grant, and any other root handler that answers `sample` or `observe`,
+such as the world `jacquard review run --handle sample=NAME` installs. The
+driver takes its draws ahead of any root handler, not only the `dist` grant. The
 inference drivers (`Infer_dist.driver_ops`) and both Warp drivers pass the
 prelude's `sample` and `observe` by their frozen identities. Scheduler and
 host captures pass none, so a task's `Dist@task` draw still goes to the root

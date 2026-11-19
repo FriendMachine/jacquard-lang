@@ -27,6 +27,17 @@ changed return types. `dist.enumerate`, `dist.sample-lw`, `enum-run` and
 `normalize` keep their hashes and behaviour: the prelude hash golden only
 grows.
 
+Note (later change): the identities are still unchanged, but three released
+behaviours changed with the categorical-draw correction. `dist.enumerate` over
+a model that samples `Categorical([])` now stops with an arithmetic error
+instead of returning `nil`, because an empty categorical is refused wherever it
+is recognised. `dist.enumerate` over a model that draws from a categorical with
+a negative, NaN or infinite weight (or an overflowing total) now stops with
+E0917, because `support`, its draw, refuses those weights. `dist.sample-lw` now
+reports E0901 when every run drew from a zero-mass categorical and E0902 for a
+draw from a negative, NaN or infinite weight, where it used to return a
+posterior on the last entry or on an entry the weights did not select.
+
 **D-INF1.2: one typed result, built from the existing `result` type.**
 
 ```text
@@ -107,6 +118,27 @@ Sampling is bounded by its sample count and is never described as exhaustive.
   usage error, exit 124.
 - The `dist-diff` command enumerates through the same driver.
 
+Note (later change): enumeration and likelihood weighting now refuse a draw
+from a categorical with a negative, NaN or infinite weight, or with finite
+weights whose sum in ascending order overflows, with E0917 at the draw, before
+any later factor can prune the path. The reason does not depend on the order
+of the entries: non-finite when any weight is NaN or infinite, else negative
+mass when any weight is negative, else non-finite (the ascending sum, which is
+the same in every entry order; a sum in entry order can overflow in one order
+and not another). `jacquard infer enumerate`, `jacquard infer lw`, `jacquard
+dist-diff` and a model document's `enumerate` and `lw` results report it as that
+numeric failure (`numerical`); the in-language `dist.enumerate-v1`,
+`dist.sample-lw-v1` and `dist.sample-lw-weights-v1` stop with the E0917
+diagnostic instead of returning an `err` value, because the prelude
+enumerators draw through `support`, which refuses the same weights, and a
+native run cannot be abandoned. Before, likelihood weighting returned a
+posterior from such weights, and enumeration classified their path weights,
+so a later observation could prune a negative branch and two single-entry
+negative sites gave a positive path. A run that is already impossible is not
+refused at a later invalid draw, since enumeration never reaches it. An
+observation of such weights is not a draw: its raw factor still reaches the
+classification as a negative or non-finite path weight.
+
 **D-INF1.6: native parity.** The seeded runs come from a new builtin,
 `dist.sample-lw-weights-v1`, implemented in the interpreter and the C runtime.
 It uses the same stream and run isolation as `dist.sample-lw`. Classification
@@ -124,6 +156,10 @@ and budgeted enumeration are ordinary prelude code, so both engines run them.
 | `infer lw --samples 0` | E0901 | usage error (exit 124) |
 | `infer lw` where some runs are impossible | the impossible values listed with probability 0 | impossible runs are dropped, so those rows are absent |
 | `infer enumerate` where some paths underflow but others do not | underflowed paths pruned, so their values were absent | underflowed paths survive and are listed with probability 0 |
+| `infer lw` drawing from a categorical with a negative, NaN or infinite weight (later change) | a posterior over the entries the draw could select | E0917 at the draw, negative mass or non-finite, as `infer enumerate` |
+| `infer enumerate` drawing from such a categorical (later change) | E0917 from the path weights, or a posterior when a later observation pruned the negative branch | E0917 at the draw, whatever the model observes afterwards |
+| `dist.enumerate-v1` or `dist.sample-lw-v1` drawing from such a categorical (later change) | `err(InferenceNumericFailureV1 …)` from the path weights, or a posterior | the program stops with E0917 |
+| `infer enumerate` or `infer lw` sampling `Categorical([])` (later change) | E0901 | E0902, `categorical support is empty` |
 
 Otherwise, a well-formed model prints the same posterior as before, provided
 its total is positive and representable and no path underflows.

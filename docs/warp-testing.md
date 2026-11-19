@@ -207,6 +207,17 @@ only the EXHAUSTIVE driver scales and prunes branches by observation weight. A
 `--exhaustive`; under sampling the condition is silently inert. Rejection-style
 resampling for the sampling lane is future work.
 
+Both drivers refuse a generator whose sample site cannot be drawn from: an
+empty `Categorical`, a negative, NaN or infinite weight, or weights that sum to
+infinity (summed in ascending order, so the decision does not depend on entry
+order) or to zero. The sampling driver reports the property as an error and
+the exhaustive driver fails with E0902, instead of drawing entries the weights
+did not select or passing vacuously over zero cases. Zero-weight entries of a
+site with positive total mass are still pruned. The sampling driver draws over
+the same total as the interpreter's draw (`Infer_dist.draw_total`: the
+ascending sum when only the entry-order sum overflows), so for the same
+uniform it picks the entry the root sampler would.
+
 ## 5. Relational cases
 
 Ordinary `Case` says that checks pass in one execution. A relational case says
@@ -332,9 +343,14 @@ driver-owns-Dist correction advances it to `warp-v3`: a property's `sample`
 and `observe` are the property driver's even when the run grants `dist`
 (`--allow dist`), so a root grant can no longer answer a property's draws, and
 a verdict cached under the old rule (for example a false exhaustive proof
-recorded with `--allow dist`) must not be served. Existing `warp-v1` and
-`warp-v2` files remain harmless in the result store but cannot satisfy a
-`warp-v3` lookup.
+recorded with `--allow dist`) must not be served. Categorical draws that follow
+their weights advance it to `warp-v5`: both lanes now refuse a generator with
+invalid weights or zero total mass that an earlier driver passed (vacuously
+or by drawing an unweighted entry), so those cached passes must not be served.
+(`warp-v4` was used only by unreleased builds of that change, which could
+cache such a false pass, so it is skipped.) Existing `warp-v1` to `warp-v4`
+files remain harmless in the result store but cannot satisfy a `warp-v5`
+lookup.
 
 Coverage gets the same semantic treatment: the interpreter records which
 definition hashes were evaluated under test, and `jacquard test --coverage` reports

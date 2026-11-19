@@ -190,8 +190,8 @@ also emits E0817; consuming the captured resumption twice emits E0816.
 | domain | code | meaning | example |
 |--------|------|---------|---------|
 | inference | E0901 | empty posterior (impossible observations) | `observe (bernoulli 0.0) true` |
-| inference | E0902 | runtime failure inside inference | a model dividing by zero |
-| warp | E0902 | runtime failure during exhaustive property execution | an exhaustive property body dividing by zero |
+| inference | E0902 | runtime failure inside inference | a model dividing by zero, or a draw from `Categorical([])` |
+| warp | E0902 | runtime failure during exhaustive property execution | an exhaustive property body dividing by zero, or a sample site whose categorical weights are negative, non-finite or sum to zero |
 | inference | E0903 | model file has no expression | a decls-only file passed to `jacquard infer` |
 | runtime | E0904 | observe at the sampling root, outside an inference driver | `observe` under `jacquard run --allow dist` (D7 default: defect); inside a driver the model's `observe` is the driver's |
 | warp | E0905 | exhaustive verification budget exceeded | a property over `uniform-int(1, 1000000)` under `jacquard test --exhaustive` |
@@ -199,13 +199,13 @@ also emits E0817; consuming the captured resumption twice emits E0816.
 | concurrency | E0907 | a Task or ChannelHandle carrier is private, malformed, foreign to the run, escaped, stale, or outside its exact structured scope | returning/storing a Task or ChannelHandle beyond `async.scope`, constructing its private carrier by hash, reusing it after its creating scope closes or in another run, or using a parent/descendant/foreign handle |
 | concurrency | E0908 | a deterministic scheduler, schedule trace, trace I/O, or same-scope policy operation is illegal for its lifecycle, decision order, registration, continuation ownership, configured positive/transport bound, or strict-replay contract | checking out a suspended task, exceeding a task/decision/input bound, observing or scheduling a terminal child twice, reading/writing an unavailable trace path, parsing an unversioned/malformed trace, or replaying a missing, extra, reordered, impossible, queue-drifted, or operation-drifted event |
 | inference | E0910 | exact risk enumeration has no positive terminal-branch budget | calling the trusted exact runner with `max-branches = 0` |
-| inference | E0911 | an exact risk model supplied an invalid finite distribution or non-comparable observation value | a categorical support with a negative, NaN, or infinite weight, or an `observe` over closures or opaque values |
+| inference | E0911 | an exact risk model supplied an invalid finite distribution or non-comparable observation value | a categorical support with a negative, NaN, or infinite weight, an empty `Categorical([])`, or an `observe` over closures or opaque values |
 | inference | E0912 | exact risk enumeration exhausted its terminal-branch budget | a four-leaf model under `max-branches = 3` |
 | inference | E0913 | an exact risk model returned something other than a released `Risk` | returning `Option Risk` or a forged constructor identity |
 | inference | E0914 | an exact risk model performed an effect other than released `Dist.sample` or `Dist.observe` | throwing from a model declared for the exact boundary |
 | inference | E0915 | exact risk enumeration could not initialize or the model failed at runtime | division by zero in a reached model branch |
 | inference | E0916 | exact risk path or accumulation arithmetic became non-finite | multiplying finite path factors into an overflowing weight |
-| inference | E0917 | inference failed numerically: every possible path or run underflowed to zero weight, or a weight or the total is non-finite or negative | two `observe` factors of `1e-200` under `jacquard infer enumerate` |
+| inference | E0917 | inference failed numerically: every possible path or run underflowed to zero weight, or a weight or the total is non-finite or negative, or an enumeration or likelihood-weighting draw (including `support`, the in-language enumerators' draw, and the prelude's `dist.pmf`, which folds over `support`) came from a categorical with a negative, NaN or infinite weight or a total that overflows when summed in ascending order, refused at the draw | two `observe` factors of `1e-200` under `jacquard infer enumerate`; `sample(Categorical([("a", -1.0), ("b", 2.0)]))` under any enumeration or likelihood-weighting driver |
 | inference | E0918 | exact enumeration exceeded its `--max-branches` terminal-path budget | a two-branch coin model under `jacquard infer enumerate --max-branches 1` |
 | runtime | E0919 | the invocation's computation fuel ran out; the run is incomplete, neither a pass nor a failure (docs/computation-fuel.md) | `spin(n) = spin(add(n, 1))` under `jacquard run --fuel 2000` |
 | runtime | E0920 | a scoped instance operation found no frame of its scope on the current continuation (a stale capability, reachable only through unchecked `eval`) | a capability smuggled out of `state.scoped` through `eval-code` and used later |
@@ -460,10 +460,10 @@ the exact Decision and ID.
 | E1541 | typed governance review facts violate an internal comparison invariant | a reached operation is absent from the complete facade operation set |
 | E1542 | a governance decision-chain presentation cannot be derived safely from the typed explanation | completion evidence disagrees with the verified action state, or a non-Ask verdict carries consent evidence |
 | E1543 | a posterior-risk model cannot be resolved by exact hash or does not have the closed `(GovernanceCall) ->{Dist} Risk` signature (a row naming the root twin `Dist@task` is refused too) | selecting a pure function, a model with an additional effect, or a model annotated `->{Dist@task}` |
-| E1544 | exact posterior configuration is invalid or bounded exhaustive inference fails | exhausting `max-branches` before the next terminal path |
+| E1544 | exact posterior configuration is invalid or bounded exhaustive inference fails | exhausting `max-branches` before the next terminal path, or a model sampling `Categorical([])` (`E0911`, `categorical support is empty`) |
 | E1545 | exact posterior evidence, weights, normalization, support, or branch accounting is invalid | four zero weights or underflow that erases theoretically positive support |
 | E1546 | exact projection cannot validate its Call, baseline, carried identities, rule, or conservative result | substituting a different Call, handler descriptor, source evidence, or nested posterior wrapper |
-| E1547 | non-authorizing approximate evidence cannot be constructed safely | a nonpositive sample count, model failure, or non-`Risk` sampled result |
+| E1547 | non-authorizing approximate evidence cannot be constructed safely | a nonpositive sample count, model failure (including a draw from a categorical with invalid weights), non-`Risk` sampled result, or every run drawing from a zero-mass categorical |
 | E1548 | posterior-aware offline verification cannot select one supported committed decision | no matching `Evaluated` entry, ambiguous linkage, malformed replay artifacts, or a dry policy whose simulator availability is not bound by the bundle |
 | E1549 | exact posterior replay disagrees with the committed assessment or unchanged live-policy verdict | changing the model evidence or exact budget, substituting the effective assessment, or committing a different verdict |
 

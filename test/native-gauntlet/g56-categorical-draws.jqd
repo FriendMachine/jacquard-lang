@@ -1,0 +1,50 @@
+; Categorical draws under the in-language drivers that do not stop the
+; program (a draw from invalid weights stops it with E0917; those exits are
+; compared in test/cli/categorical-draws.t). A zero-mass draw is an impossible
+; run or branch for both -v1 drivers. A site behind an exact zero observation
+; is never reached by enumeration, so a run that is already impossible draws
+; from invalid weights and carries on: alone the model is impossible, beside a
+; valid branch both drivers give that branch. An observation (not a draw) of
+; a negative or NaN weight is still a negative or non-finite leaf. The
+; released dist.sample-lw weighs a zero-mass run zero, so it shows as a
+; zero-probability row. Byte-identical natively.
+(let nonrec (pvar cat1)
+  (lam ((pvar x) (pvar w))
+    (app (var categorical) (app (var cons) (app (var mk-pair) (var x) (var w)) (var nil))))
+(let nonrec (pvar cat2)
+  (lam ((pvar a) (pvar b))
+    (app (var categorical) (app (var cons) (app (var mk-pair) (lit "a") (var a)) (app (var cons) (app (var mk-pair) (lit "b") (var b)) (var nil)))))
+(let nonrec (pvar nan) (app (var real.div) (lit 0.0) (lit 0.0))
+(let nonrec (pvar zero) (lam () (app (var sample) (app (var cat2) (lit 0.0) (lit 0.0))))
+(let nonrec (pvar dead)
+  (lam ()
+    (let nonrec (pwild) (app (var observe) (app (var cat1) (lit "b") (lit 1.0)) (lit "a"))
+      (app (var sample) (app (var cat2) (lit -1.0) (var nan)))))
+(let nonrec (pvar coin-or-dead)
+  (lam ()
+    (match (app (var sample) (app (var bernoulli) (lit 0.5)))
+      (clause (pcon true) (app (var dead)))
+      (clause (pcon false) (lit "ok"))))
+(let nonrec (pvar observed-negative)
+  (lam () (let nonrec (pwild) (app (var observe) (app (var cat1) (lit "a") (lit -1.0)) (lit "a")) (lit "a")))
+(let nonrec (pvar observed-nan)
+  (lam () (let nonrec (pwild) (app (var observe) (app (var cat1) (lit "a") (var nan)) (lit "a")) (lit "a")))
+(let nonrec (pvar mixed)
+  (lam ()
+    (match (app (var sample) (app (var bernoulli) (lit 0.5)))
+      (clause (pcon true) (lit "coin"))
+      (clause (pcon false) (app (var sample) (app (var cat2) (lit 0.0) (lit 0.0))))))
+(tuple
+  (app (var cons) (app (var dist.sample-lw-v1) (var zero) (lit 5) (lit 1))
+  (app (var cons) (app (var dist.enumerate-v1) (var zero) (lit 10))
+  (app (var cons) (app (var dist.sample-lw-v1) (var dead) (lit 5) (lit 1))
+  (app (var cons) (app (var dist.enumerate-v1) (var dead) (lit 10))
+  (app (var cons) (app (var dist.sample-lw-v1) (var coin-or-dead) (lit 20) (lit 1))
+  (app (var cons) (app (var dist.enumerate-v1) (var coin-or-dead) (lit 10))
+  (app (var cons) (app (var dist.sample-lw-v1) (var observed-negative) (lit 5) (lit 1))
+  (app (var cons) (app (var dist.enumerate-v1) (var observed-negative) (lit 10))
+  (app (var cons) (app (var dist.sample-lw-v1) (var observed-nan) (lit 5) (lit 1))
+  (app (var cons) (app (var dist.enumerate-v1) (var observed-nan) (lit 10))
+  (var nil)))))))))))
+  (app (var dist.sample-lw-weights-v1) (var coin-or-dead) (lit 4) (lit 1))
+  (app (var dist.sample-lw) (var mixed) (lit 20) (lit 1))))))))))))

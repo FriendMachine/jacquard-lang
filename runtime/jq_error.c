@@ -107,12 +107,20 @@ static jq_error_contract contract(jq_error_kind kind) {
   abort();
 }
 
+/* a coded diagnostic that an enclosing inference driver wraps keeps its code
+ * and summary in the wrapper's cause, as the interpreter's
+ * Diag.to_cause_string renders it: an inner driver's empty posterior (E0901)
+ * or its refusal to draw from invalid categorical weights (E0917) */
+static int nested_keeps_code(const char *code) {
+  return code && (strcmp(code, "E0901") == 0 || strcmp(code, "E0917") == 0);
+}
+
 void jq_diagnostic_fail(int status, const char *code, const char *summary,
                         const char *cause, const char *next_step) {
   if (inference_depth > 0) {
     unsigned nested_wrappers = inference_depth - 1;
     inference_start(nested_wrappers);
-    if (code && strcmp(code, "E0901") == 0) {
+    if (nested_keeps_code(code)) {
       fprintf(stderr, "%s: %s (", code, summary);
       write_indented(cause);
       fputc(')', stderr);
@@ -136,12 +144,12 @@ void jq_diagnostic_failf(int status, const char *code, const char *summary,
   if (inference_depth > 0) {
     unsigned nested_wrappers = inference_depth - 1;
     inference_start(nested_wrappers);
-    if (code && strcmp(code, "E0901") == 0) fprintf(stderr, "%s: %s (", code, summary);
+    if (nested_keeps_code(code)) fprintf(stderr, "%s: %s (", code, summary);
     va_list inference_ap;
     va_start(inference_ap, cause_format);
     vwrite_indentedf(cause_format, inference_ap);
     va_end(inference_ap);
-    if (code && strcmp(code, "E0901") == 0) fputc(')', stderr);
+    if (nested_keeps_code(code)) fputc(')', stderr);
     inference_finish(nested_wrappers);
   }
   if (code)

@@ -114,7 +114,8 @@ A path that underflows beside one that does not survives with probability 0:
   1.000000  2
   0.000000  1
 
-Non-finite and negative weights:
+Non-finite and negative weights. A draw from such weights is refused at the
+draw; an observation of them is a negative or non-finite path weight:
 
   $ cat > negative.jqd <<'M'
   > (app (var sample) (app (var categorical)
@@ -122,7 +123,7 @@ Non-finite and negative weights:
   > M
   $ jacquard infer enumerate negative.jqd
   error[E0917]: Inference failed numerically.
-    Cause: a path weight is negative
+    Cause: a categorical to draw from has a negative weight; enumeration and likelihood weighting draw only from finite, nonnegative weights
     Next step: Rescale the model's weights so every path weight and the total stay finite, nonnegative, and representable.
   [1]
   $ cat > overflow.jqd <<'M'
@@ -131,6 +132,24 @@ Non-finite and negative weights:
   >     (app (var cons) (app (var mk-pair) (lit 2) (lit 1e308)) (var nil)))))
   > M
   $ jacquard infer enumerate overflow.jqd
+  error[E0917]: Inference failed numerically.
+    Cause: a categorical to draw from has a weight or a total that is not finite; enumeration and likelihood weighting draw only from finite weights with a finite total
+    Next step: Rescale the model's weights so every path weight and the total stay finite, nonnegative, and representable.
+  [1]
+  $ cat > observed-negative.jqd <<'M'
+  > (let nonrec (pwild) (app (var observe) (app (var categorical)
+  >   (app (var cons) (app (var mk-pair) (lit 1) (lit -0.5)) (var nil))) (lit 1)) (lit 1))
+  > M
+  $ jacquard infer enumerate observed-negative.jqd
+  error[E0917]: Inference failed numerically.
+    Cause: a path weight is negative
+    Next step: Rescale the model's weights so every path weight and the total stay finite, nonnegative, and representable.
+  [1]
+  $ cat > observed-overflow.jqd <<'M'
+  > (let nonrec (pwild) (app (var observe) (app (var categorical)
+  >   (app (var cons) (app (var mk-pair) (lit 1) (app (var real.mul) (lit 1e308) (lit 10.0))) (var nil))) (lit 1)) (lit 1))
+  > M
+  $ jacquard infer enumerate observed-overflow.jqd
   error[E0917]: Inference failed numerically.
     Cause: a path weight or the total mass is not finite
     Next step: Rescale the model's weights so every path weight and the total stay finite, nonnegative, and representable.

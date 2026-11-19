@@ -517,10 +517,11 @@ grant is ported (both prompt shapes, byte-exact); the content-addressed
 completion cache needs to READ its readable entry format back (a reader
 port, task 73's territory), so native binaries reject `--infer-cache`
 with an up-front E1103 instead of silently not caching. Also as built:
-`dist.sample-lw` isolates each run against an empty in-language handler
-stack (the interpreter drives a fresh state machine per model run), owns
-its model's `sample` and `observe` ahead of a root `dist` grant (other
-grants still apply), and renders root-reaching ops with the "(not handled during inference)"
+`dist.sample-lw` (and later `dist.sample-lw-weights-v1`, which
+`dist.sample-lw-v1` calls) isolates each run against an empty in-language
+handler stack (the interpreter drives a fresh state machine per model run),
+owns its model's `sample` and `observe` ahead of any root grant, a `dist`
+grant included (other grants' operations still reach the model), and renders root-reaching ops with the "(not handled during inference)"
 pseudo-effect; the root sampler seeds from `--seed` (both spellings) or
 OS entropy, exactly one jq_rng_float per draw with no split; and the DST
 battery exposed a real chain-depth bug in run_from (un-entered frames

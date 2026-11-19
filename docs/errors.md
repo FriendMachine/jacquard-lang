@@ -193,7 +193,7 @@ also emits E0817; consuming the captured resumption twice emits E0816.
 | inference | E0902 | runtime failure inside inference | a model dividing by zero |
 | warp | E0902 | runtime failure during exhaustive property execution | an exhaustive property body dividing by zero |
 | inference | E0903 | model file has no expression | a decls-only file passed to `jacquard infer` |
-| runtime | E0904 | observe at the sampling root | `observe` under `jacquard run --allow dist` (D7 default: defect) |
+| runtime | E0904 | observe at the sampling root, outside an inference driver | `observe` under `jacquard run --allow dist` (D7 default: defect); inside a driver the model's `observe` is the driver's |
 | warp | E0905 | exhaustive verification budget exceeded | a property over `uniform-int(1, 1000000)` under `jacquard test --exhaustive` |
 | runtime | E0906 | a once continuation was resumed more than once | applying the same once resumption twice |
 | concurrency | E0907 | a Task or ChannelHandle carrier is private, malformed, foreign to the run, escaped, stale, or outside its exact structured scope | returning/storing a Task or ChannelHandle beyond `async.scope`, constructing its private carrier by hash, reusing it after its creating scope closes or in another run, or using a parent/descendant/foreign handle |

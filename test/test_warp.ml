@@ -151,28 +151,40 @@ let test_cache_entry_roundtrip () =
             outcomes back
       | None -> Alcotest.failf "entry did not round-trip:\n%s" printed)
 
+(* SC.17 re-keyed Warp to warp-v2 (nested-scope cancellation); the driver-owns-Dist correction
+   re-keys it to warp-v3, because a property run under a root dist grant could cache a false
+   verdict. Entries under either earlier epoch stay readable under their exact keys and are never
+   reused. *)
 let test_cache_version_invalidates_pre_sc17_entries () =
-  Alcotest.(check string) "SC.17 driver cache epoch" "warp-v2" Warp.version;
+  Alcotest.(check string) "driver cache epoch" "warp-v3" Warp.version;
   let member = Hash.of_string "sc17-nested-cancellation" in
-  let old_key = Printf.sprintf "warp-v1|case|%s" (Hash.to_hex member) in
   let current_key = Warp.cache_key_string (Warp.Hermetic ("display-only", member)) in
-  Alcotest.(check bool)
-    "corrected scheduler semantics re-key hermetic results" true
-    (not (String.equal old_key current_key));
-  let cache_dir = Filename.temp_dir ~perms:0o700 "jacquard-warp-sc17-" ".cache" in
-  Fun.protect
-    ~finally:(fun () ->
-      Array.iter (fun name -> Sys.remove (Filename.concat cache_dir name)) (Sys.readdir cache_dir);
-      Unix.rmdir cache_dir)
-    (fun () ->
-      let outcomes = [ ("old/result", Warp.Pass 1, None, []) ] in
-      Warp.cache_store ~cache_dir:(Some cache_dir) old_key outcomes;
+  List.iter
+    (fun epoch ->
+      let old_key = Printf.sprintf "%s|case|%s" epoch (Hash.to_hex member) in
       Alcotest.(check bool)
-        "pre-SC.17 entry remains readable under its exact old key" true
-        (Option.is_some (Warp.cache_lookup ~cache_dir:(Some cache_dir) old_key));
-      Alcotest.(check bool)
-        "pre-SC.17 entry is not reused by the corrected driver" true
-        (Option.is_none (Warp.cache_lookup ~cache_dir:(Some cache_dir) current_key)))
+        (epoch ^ ": corrected driver semantics re-key hermetic results")
+        true
+        (not (String.equal old_key current_key));
+      let cache_dir = Filename.temp_dir ~perms:0o700 "jacquard-warp-epoch-" ".cache" in
+      Fun.protect
+        ~finally:(fun () ->
+          Array.iter
+            (fun name -> Sys.remove (Filename.concat cache_dir name))
+            (Sys.readdir cache_dir);
+          Unix.rmdir cache_dir)
+        (fun () ->
+          let outcomes = [ ("old/result", Warp.Pass 1, None, []) ] in
+          Warp.cache_store ~cache_dir:(Some cache_dir) old_key outcomes;
+          Alcotest.(check bool)
+            (epoch ^ " entry remains readable under its exact old key")
+            true
+            (Option.is_some (Warp.cache_lookup ~cache_dir:(Some cache_dir) old_key));
+          Alcotest.(check bool)
+            (epoch ^ " entry is not reused by the corrected driver")
+            true
+            (Option.is_none (Warp.cache_lookup ~cache_dir:(Some cache_dir) current_key))))
+    [ "warp-v1"; "warp-v2" ]
 
 let test_cache_evidence () =
   test_cache_entry_roundtrip ();

@@ -209,10 +209,16 @@ type ctx = {
           innermost *)
   mutable capture_ops : bool;
       (** when set (by {!run_state_capturing}), an op that reaches the root with no handler and no
-          grant is CAPTURED — returned with its continuation — instead of dying [Unhandled]; this is
-          how native inference drivers (M3) receive resumptions *)
+          grant, or that the capturing driver owns ([driver_ops]), is CAPTURED — returned with its
+          continuation — instead of dying [Unhandled]; this is how native inference drivers (M3)
+          receive resumptions *)
   mutable capture_root_handlers : bool;
       (** scheduler-only mode: capture granted operations before invoking their root handlers *)
+  mutable driver_ops : Hash.t list;
+      (** the operations the capturing inference driver owns (its model's [sample] and [observe]);
+          while [capture_ops] is set they are captured before any root handler, so a root grant
+          never answers a driver's own operation. Every capture assigns it for its own duration;
+          [[]] outside a driver capture *)
   mutable code_resolver : (Kernel.expr -> (Kernel.expr, Diag.t list) result) option;
       (** how [eval-code] resolves a payload; [None] resolves against the store's public names *)
   mutable term_guard : (Hash.t -> bool) option;
@@ -312,6 +318,7 @@ let make_ctx store =
     dispatching = [];
     capture_ops = false;
     capture_root_handlers = false;
+    driver_ops = [];
     code_resolver = None;
     term_guard = None;
     track_coverage = true;
@@ -1811,7 +1818,10 @@ let perform_unchecked ?site ?caller ctx (op : Hash.t) ~name ~effect_ (args : Val
            callback can influence them; the mode is read only when the operation is captured *)
         let native =
           match Hashtbl.find_opt ctx.root_handlers op with
-          | Some handler when not ctx.capture_root_handlers -> Some handler
+          | Some handler
+            when (not ctx.capture_root_handlers)
+                 && not (ctx.capture_ops && List.exists (Hash.equal op) ctx.driver_ops) ->
+              Some handler
           | Some _ | None -> None
         in
         let mode =
@@ -2348,15 +2358,21 @@ let fresh_validated_state ctx (Validated_state (owner, state, initial_graph) as 
     Validated_state (owner, state, None)
 
 (* a capture together with the correlation id of the captured operation's Operation event *)
-let capture_with_call ~capture_root_handlers ctx (state : state) =
+(* a capture always assigns [driver_ops]: a driver passes the operations it owns, and every other
+   capture (a scheduler's or host's routed run) resets them to [[]], so an outer driver's
+   ownership never leaks into a task's root draw *)
+let capture_with_call ?(driver_ops = []) ~capture_root_handlers ctx (state : state) =
   let saved = ctx.capture_ops in
   let saved_root = ctx.capture_root_handlers in
+  let saved_driver = ctx.driver_ops in
   ctx.capture_ops <- true;
   ctx.capture_root_handlers <- capture_root_handlers;
+  ctx.driver_ops <- driver_ops;
   Fun.protect
     ~finally:(fun () ->
       ctx.capture_ops <- saved;
-      ctx.capture_root_handlers <- saved_root)
+      ctx.capture_root_handlers <- saved_root;
+      ctx.driver_ops <- saved_driver)
     (fun () ->
       match run_state_unchecked ctx state with
       | v -> Ok (CValue v, None)
@@ -2378,16 +2394,16 @@ let capture_with_call ~capture_root_handlers ctx (state : state) =
 (** [run_state_capturing_trusted ctx state] captures like {!run_state_capturing} without scanning
     [state] first. The caller must have validated the immutable initial state and must only supply
     states derived from evaluator transitions; memo and native result guards remain active. *)
-let run_state_capturing_trusted ?(capture_root_handlers = false) ctx (state : state) :
+let run_state_capturing_trusted ?driver_ops ?(capture_root_handlers = false) ctx (state : state) :
     (capture, Runtime_err.t) result =
-  Result.map fst (capture_with_call ~capture_root_handlers ctx state)
+  Result.map fst (capture_with_call ?driver_ops ~capture_root_handlers ctx state)
 
 (** [run_validated_state_capturing ctx state] captures a previously validated state without
     rescanning its immutable syntax. Native and memo result guards remain active. *)
-let run_validated_state_capturing ctx (Validated_state (owner, state, _)) =
+let run_validated_state_capturing ?driver_ops ctx (Validated_state (owner, state, _)) =
   if owner != ctx then Error (foreign_evaluator_context "validated state")
   else
-    match run_state_capturing_trusted ctx state with
+    match run_state_capturing_trusted ?driver_ops ctx state with
     | Ok (CValue value) -> Ok (VCValue value)
     | Ok (COp { op; name; args; kont = Multi_kont (owner, kont) }) ->
         Ok (VCOp { op; name; args; kont = Validated_multi_kont (Validated_kont (owner, kont)) })
@@ -2419,14 +2435,16 @@ let resume_validated_state ctx kont value =
           | exception Rt error -> Error error
           | exception Fuel_meter.Exceeded -> Error (fuel_error ctx))
 
-(** [run_state_capturing ctx state] drives [state] to completion, but instead of dying on an
-    unhandled op it returns the op with its continuation ({!COp}). Used by native inference drivers
-    (M3); nested [run_state] sub-runs (store-term isolation) still die [Unhandled], which the
-    checker's E0815 makes unreachable for checked programs. *)
-let run_state_capturing ctx (state : state) : (capture, Runtime_err.t) result =
+(** [run_state_capturing ?driver_ops ctx state] drives [state] to completion, but instead of dying
+    on an unhandled op it returns the op with its continuation ({!COp}). An operation in
+    [driver_ops] (default none) is captured even when a root handler is registered for it, so the
+    driver owns it ahead of a root grant. Used by native inference drivers (M3); nested [run_state]
+    sub-runs (store-term isolation) still die [Unhandled], which the checker's E0815 makes
+    unreachable for checked programs. *)
+let run_state_capturing ?driver_ops ctx (state : state) : (capture, Runtime_err.t) result =
   match validate_state ctx state with
   | Error error -> Error error
-  | Ok () -> run_state_capturing_trusted ctx state
+  | Ok () -> run_state_capturing_trusted ?driver_ops ctx state
 
 type once_capture =
   | OCValue of Value.t

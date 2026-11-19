@@ -97,14 +97,15 @@ jq_value jq_perform(jq_rt *rt, uint32_t op_ord, uint16_t n, const jq_value *args
         "Use a capability only inside its scope; do not pass it through unchecked eval.",
         "operation `%s` used a capability whose scope is not on the current continuation",
         rt->op_meta[op_ord]->op_name);
-  /* root grants (the --allow natives) */
-  if (op_ord < rt->n_ops && rt->grants && rt->grants[op_ord])
-    return rt->grants[op_ord](rt, args);
-  /* the inference driver's interception, AFTER grants — the interpreter's
-     run_until_op captures ops only once they reach the true root */
+  /* the inference driver's interception, BEFORE grants: the driver owns its model's sample and
+     observe, as the interpreter's run_until_op captures its driver_ops ahead of any root
+     handler, so a root dist grant never answers them */
   if (rt->lw && op_ord == rt->ord_sample && n == 1) return jq_lw_sample(rt, args[0]);
   if (rt->lw && op_ord == rt->ord_observe && n == 2)
     return jq_lw_observe(rt, args[0], args[1]);
+  /* root grants (the --allow natives); every other granted operation still reaches a model */
+  if (op_ord < rt->n_ops && rt->grants && rt->grants[op_ord])
+    return rt->grants[op_ord](rt, args);
   /* the capability story at runtime: unhandled dies, exit 3. During a
      weighted run the interpreter instead names the pseudo-effect and
      flattens the failure through the LW driver's diagnostics (E0902,

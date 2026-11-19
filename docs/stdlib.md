@@ -1454,6 +1454,22 @@ a `NaN` weight. A construction is now a `Distribution Bool` or a
 `Distribution Int` (see [Dist](#dist)) and such programs are check errors
 (E0801, or E0804 against an annotation). No identity changes.
 
+**Inference drivers yielded to a root `dist` grant.** Before this correction, a
+program run with `--allow dist` (or `--dry-run`, which installs the grant with
+seed 0) let the root sampler answer `sample` and the root `observe` stub answer
+`observe` inside `dist.sample-lw`, `dist.sample-lw-weights-v1`,
+`dist.sample-lw-v1`, a model document's `enumerate` and `lw` results, the
+`posterior.run-exact-v1` and `posterior.sample-evidence-v1` builtins and Warp
+properties, in the interpreter and (for `dist.sample-lw`) in native binaries.
+The driver's seed was ignored, any `observe` failed with E0902, exact
+enumeration explored one path, the driver consumed the root stream, and Warp
+could report and cache a false exhaustive proof. A driver now owns its model's
+`sample` and `observe`, so a granted run gives the grant-free result; the root
+grant still answers draws outside a driver (including a task's `Dist@task`
+draw), and other root grants still reach a model. No identity changes; the
+Warp cache tag moves from `warp-v2` to `warp-v3`, so earlier cached verdicts
+are not reused.
+
 **`Map k v` displays as `map.t k v`.** Elaborated signatures print the store name of the
 wrapper type; the doc's display-syntax `Map k v` is the same type.
 

@@ -544,10 +544,11 @@ Model documents classify the same way:
   [2]
 
 `jacquard dist-diff` enumerates through the same driver, so it refuses the
-negative branch a later observation would prune. Its posterior cache key moves
-from `dist-diff-v2` to `dist-diff-v3`: an entry written under the old key may
-hold a posterior from such a model, and is never served. The same entry
-written under the current key is served, so only the key keeps it out:
+negative branch a later observation would prune. Its posterior cache key moved
+from `dist-diff-v2` to `dist-diff-v3` (it is now `dist-diff-v4`): an entry
+written under the old key may hold a posterior from such a model, and is never
+served. The same entry written under the current key is served, so only the
+key keeps it out:
 
   $ cat > dd-neg.jqd <<'EOF'
   > (let nonrec (pvar x) (app (var sample) (app (var categorical) (app (var cons) (app (var mk-pair) (lit "a") (lit -1.0)) (app (var cons) (app (var mk-pair) (lit "b") (lit 2.0)) (var nil))))) (let nonrec (pwild) (app (var observe) (app (var categorical) (app (var cons) (app (var mk-pair) (lit "b") (lit 1.0)) (var nil))) (var x)) (var x)))
@@ -564,7 +565,7 @@ written under the current key is served, so only the key keeps it out:
   exit 1
   error[E0917]: Inference failed numerically.
     Cause: a categorical to draw from has a negative weight; enumeration and likelihood weighting draw only from finite, nonnegative weights
-  $ entry dd-new dist-diff-v3
+  $ entry dd-new dist-diff-v4
   $ jacquard dist-diff dd-neg.jqd dd-fair.jqd --tolerance 0.001 --cache-dir dd-new > dd.out 2>&1; echo "exit $?"; sort dd.out
   exit 0
   P("b"): 1.000000 -> 0.500000 (delta -0.500000)

@@ -523,7 +523,9 @@ handler stack (the interpreter drives a fresh state machine per model run),
 owns its model's `sample` and `observe` ahead of any root grant, a `dist`
 grant included (other grants' operations still reach the model), and renders root-reaching ops with the "(not handled during inference)"
 pseudo-effect; the root sampler seeds from `--seed` (both spellings) or
-OS entropy, exactly one jq_rng_float per draw with no split; and the DST
+OS entropy, one jq_rng_float per draw with no split (a uniform-int
+range of more than 2^32 values instead takes one or more jq_rng_next
+outputs); and the DST
 battery exposed a real chain-depth bug in run_from (un-entered frames
 were re-pushed above their inner extent's frames on suspension —
 fixed, unit-tested, and pinned as g25).

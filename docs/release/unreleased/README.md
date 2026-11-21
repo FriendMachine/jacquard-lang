@@ -140,16 +140,41 @@ Notes for the next release's upgrade section, collected as changes land:
   `posterior.run-exact-v1` on a model sampling `Categorical([])` reports
   `E1544 … E0911` instead of `E1545`. Warp's sampled and exhaustive lanes fail
   such a generator instead of crashing or passing over zero cases, and the
-  Warp cache tag moves from `warp-v3` to `warp-v5`, so cached verdicts are
-  recomputed once. Warp's sampled lane and `jacquard review`'s sampled cases
+  Warp cache tag moves from `warp-v3` to `warp-v6` (with the `UniformInt`
+  change below), so cached verdicts are recomputed once. Warp's sampled lane and `jacquard review`'s sampled cases
   draw over the same total as the root sampler, and `jacquard review` judges
   a Distribution domain's total by the same ascending-sum rule (E1012), also
   after merging equal values (in exhaustive reviews too, and whatever the
   order of the equal values). The `jacquard dist-diff` posterior cache key moves from
-  `dist-diff-v2` to `dist-diff-v3` for the same reason: an older entry may hold
+  `dist-diff-v2` to `dist-diff-v3` (now `dist-diff-v4`, see below) for the same reason: an older entry may hold
   a posterior from weights enumeration now refuses. A NaN weight in these messages is written `nan` on every
   platform. Valid distributions draw exactly as before, in the interpreter and
-  in native binaries. No identity changes.
+  in native binaries (except `UniformInt` ranges of more than 2^32 values; see
+  the next note). No identity changes.
+- **UniformInt ranges wider than Int (correction).** Every non-empty
+  `UniformInt` range is now drawn, scored and enumerated correctly, including
+  ranges whose size exceeds the largest Int such as
+  `UniformInt(min-int, max-int)`. Before, such a range drew `lo` every time or
+  values outside its bounds, `pmf` returned a negative or infinite mass,
+  `support` returned `nil` or crashed, and native binaries drew differently
+  from the interpreter. A range of more than 2^32 values is now drawn exactly
+  uniformly from integer RNG bits (with rejection, so one draw can consume
+  several RNG outputs), so seeded draws from such ranges change in both
+  engines, including ranges whose size fits in an Int, such as
+  `UniformInt(0, 4294967296)` or `UniformInt(0, max-int - 1)`. Before, the
+  float formula, in a range of more than 2^52 and fewer than 2^53 values, made
+  some values at least twice as likely as others or left them unreachable, and
+  a range of more than 2^53 values could reach at most 2^53 of its values. Seeded draws from ranges of at most
+  2^32 values are unchanged; they still scale one uniform float by the size
+  n, which reaches every value and is uniform to within a factor below
+  1 + 10^-6, while `pmf` reports the ideal 1/n. The
+  enumeration cap's error now names the exact size. Warp shrinks a
+  `UniformInt` choice over more than 2^16 values by trying `lo` and then
+  halving the distance, so shrunk counterexamples for such ranges can differ.
+  The Warp cache tag is `warp-v6` (see above), and the `jacquard dist-diff`
+  posterior cache key moves on to `dist-diff-v4`, because an earlier driver
+  enumerated the full range as empty and cached a posterior missing that
+  branch. Both caches recompute once. No identity changes.
 - **Bernoulli and UniformInt have element types (soundness fix).** A
   construction of the prelude's `Bernoulli(p)` is now a `Distribution Bool` and
   of `UniformInt(lo, hi)` a `Distribution Int`, matching what sampling, `pmf`,

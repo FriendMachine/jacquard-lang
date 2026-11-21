@@ -155,10 +155,12 @@ let test_cache_entry_roundtrip () =
    re-keys it to warp-v3, because a property run under a root dist grant could cache a false
    verdict; categorical draws that follow their weights re-key it to warp-v4, because both lanes
    now refuse generators an earlier driver passed, and then to warp-v5, because unreleased builds
-   could cache a false pass under warp-v4. Entries under every earlier epoch stay readable under
-   their exact keys and are never reused. *)
+   could cache a false pass under warp-v4; uniform-int ranges wider than Int re-key it to warp-v6,
+   because an earlier driver drew every value of such a range from one end (or outside it), so a
+   cached pass could be vacuous. Entries under every earlier epoch stay readable under their exact
+   keys and are never reused. *)
 let test_cache_version_invalidates_pre_sc17_entries () =
-  Alcotest.(check string) "driver cache epoch" "warp-v5" Warp.version;
+  Alcotest.(check string) "driver cache epoch" "warp-v6" Warp.version;
   let member = Hash.of_string "sc17-nested-cancellation" in
   let current_key = Warp.cache_key_string (Warp.Hermetic ("display-only", member)) in
   List.iter
@@ -186,7 +188,7 @@ let test_cache_version_invalidates_pre_sc17_entries () =
             (epoch ^ " entry is not reused by the corrected driver")
             true
             (Option.is_none (Warp.cache_lookup ~cache_dir:(Some cache_dir) current_key))))
-    [ "warp-v1"; "warp-v2"; "warp-v3"; "warp-v4" ]
+    [ "warp-v1"; "warp-v2"; "warp-v3"; "warp-v4"; "warp-v5" ]
 
 let test_cache_evidence () =
   test_cache_entry_roundtrip ();

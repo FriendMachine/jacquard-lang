@@ -512,7 +512,7 @@ cache; MODEL.1 does not reuse or extend it.
 - **Make assumptions `defterm`s and rely on Merkle hashes**: no new format, but
   an assumption edit becomes a source edit, rehashes every dependent term and
   loses the assumption/observation distinction DES.2 §4.2 requires.
-- **Reuse Warp's result store**: Warp keys are per-lane and fixed by the Warp version tag (now `warp-v5`);
+- **Reuse Warp's result store**: Warp keys are per-lane and fixed by the Warp version tag (now `warp-v6`);
   mixing documents into it would change Warp's contract.
 
 ## 6. Owner decisions (adopted 2026-10-27)

@@ -203,8 +203,9 @@ jq_value jq_g_fs_list_dir(jq_rt *rt, const jq_value *args) {
 }
 
 /* dist (task 72): the seeded sampling grant. sample draws one value
- * ancestrally from the --seed'd stream (one jq_rng_float per draw, no
- * split — Prelude.install_dist's single Rng); observe reaching the root
+ * ancestrally from the --seed'd stream (one draw_dist per draw: one
+ * jq_rng_float, or jq_rng_next bits for a uniform-int range above 2^32
+ * values; no split — Prelude.install_dist's single Rng); observe reaching the root
  * is a defect, the interpreter's E0904 at exit 2. The draw itself lives
  * in jq_intrinsics.c (jq_g_dist_draw) beside the dist recognizers. */
 

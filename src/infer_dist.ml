@@ -135,6 +135,51 @@ type dist_v =
   | Categorical of (Value.t * float) list
   | UniformInt of int * int (* lo..hi inclusive (SL.7) *)
 
+(** [uniform_fits lo hi] (for [lo <= hi]) holds when the range's size [hi - lo + 1] is an OCaml int.
+    [uniform-int(min-int, max-int)] and other ranges spanning at least [max_int] do not fit: their
+    size wraps, so every site below computes it without integer overflow. The native runtime's
+    [uniform_fits] is the same test. *)
+let uniform_fits lo hi = hi - lo >= 0 && hi - lo < max_int
+
+(** [uniform_count lo hi] (for [lo <= hi]) is the range's size as a float: exact up to float
+    rounding, positive, and never wrapped. *)
+let uniform_count lo hi =
+  if uniform_fits lo hi then float_of_int (hi - lo + 1)
+  else float_of_int hi -. float_of_int lo +. 1.0
+
+(** [uniform_span_at_least lo hi k] (for [lo <= hi] and [0 <= k < max_int]) holds when the range has
+    more than [k] values, that is when [hi - lo >= k], with [hi - lo] read as the unsigned number it
+    denotes even when it wraps. *)
+let uniform_span_at_least lo hi k = (not (uniform_fits lo hi)) || hi - lo >= k
+
+(** [uniform_exact_threshold] is 2^32: a range with more values than this is drawn from integer RNG
+    bits ({!uniform_bits_offset}); a range with at most this many is drawn by scaling one uniform
+    float by its size, the formula every release used. The native runtime's
+    [JQ_UNIFORM_EXACT_THRESHOLD] is the same. *)
+let uniform_exact_threshold = 1 lsl 32
+
+(** [uniform_bits_count lo hi] (for [lo <= hi]) is the range's size [hi - lo + 1] as an unsigned
+    64-bit number: up to 2^63 (stored as [Int64.min_int]) for [uniform-int(min-int, max-int)]. *)
+let uniform_bits_count lo hi = Int64.add (Int64.logand (Int64.of_int (hi - lo)) Int64.max_int) 1L
+
+(** [uniform_bits_offset count r] (for [count] an unsigned size above 2^32 and at most 2^63, and [r]
+    63 unsigned random bits, below 2^63) is [Some (r mod count)] when [r] is below the largest
+    multiple of [count] that is at most 2^63, else [None]: the draw rejects [r] and takes fresh
+    bits. Accepted offsets are exactly uniform. For [count = 2^63] every [r] is accepted. The native
+    runtime's [uniform_draw] computes the same in [uint64_t]. *)
+let uniform_bits_offset count r =
+  let limit = Int64.sub Int64.min_int (Int64.unsigned_rem Int64.min_int count) in
+  if Int64.unsigned_compare r limit < 0 then Some (Int64.unsigned_rem r count) else None
+
+(** [unsigned_offset_text i] renders [i], an offset stored as an OCaml int, as the unsigned 63-bit
+    decimal it denotes (offsets of [2^62] and above are stored as negative ints). *)
+let unsigned_offset_text i =
+  Printf.sprintf "%Lu" (Int64.logand (Int64.of_int i) 0x7FFF_FFFF_FFFF_FFFFL)
+
+(** [uniform_count_text lo hi] (for [lo <= hi]) is the range's exact size in decimal, up to
+    9223372036854775808 for [uniform-int(min-int, max-int)]. *)
+let uniform_count_text lo hi = Printf.sprintf "%Lu" (uniform_bits_count lo hi)
+
 (* Recognize a runtime distribution value built from the prelude constructors. *)
 let dist_of_value (ctx : Eval.ctx) (v : Value.t) : (dist_v, Runtime_err.t) result =
   ignore ctx;
@@ -190,12 +235,13 @@ let support ctx (d : dist_v) : ((Value.t * float) list, Runtime_err.t) result =
   | UniformInt (lo, hi) ->
       (* enumeration support is the whole range; budget-capped so a huge range is a clean
          error instead of an out-of-memory list *)
-      let n = hi - lo + 1 in
-      if n > 10_000 then
+      if uniform_span_at_least lo hi 10_000 then
         Error
           (Runtime_err.Arithmetic
-             (Printf.sprintf "uniform-int %d..%d has %d outcomes; enumeration caps at 10000" lo hi n))
+             (Printf.sprintf "uniform-int %d..%d has %s outcomes; enumeration caps at 10000" lo hi
+                (uniform_count_text lo hi)))
       else
+        let n = hi - lo + 1 in
         let p = 1.0 /. float_of_int n in
         Ok (List.init n (fun i -> (Value.VInt (lo + i), p)))
 
@@ -204,8 +250,10 @@ let support ctx (d : dist_v) : ((Value.t * float) list, Runtime_err.t) result =
 let pmf ctx (d : dist_v) (v : Value.t) : (float, Runtime_err.t) result =
   match d with
   | UniformInt (lo, hi) ->
-      let n = float_of_int (hi - lo + 1) in
-      Ok (match v with Value.VInt x when x >= lo && x <= hi -> 1.0 /. n | _ -> 0.0)
+      Ok
+        (match v with
+        | Value.VInt x when x >= lo && x <= hi -> 1.0 /. uniform_count lo hi
+        | _ -> 0.0)
   | _ ->
       Result.map
         (fun entries ->
@@ -343,8 +391,7 @@ let enumerate_risk_exact (ctx : Eval.ctx) ~max_branches (model : Eval.state) :
       | Ok entries -> validate_entries operation entries
     in
     let uniform_probability lo hi =
-      let count = float_of_int hi -. float_of_int lo +. 1.0 in
-      let probability = 1.0 /. count in
+      let probability = 1.0 /. uniform_count lo hi in
       if finite_nonnegative probability && probability > 0.0 then Ok probability
       else
         invalid_arithmetic "uniform-int %d..%d produced invalid support weight %g" lo hi probability
@@ -611,6 +658,31 @@ module Rng = struct
   let split t = make (Int64.to_int (next_int64 t))
 end
 
+(** [uniform_draw rng lo hi] (for [lo <= hi]) draws one element of [[lo, hi]]. A range of more than
+    2^32 values ({!uniform_exact_threshold}), up to the 2^63 values of
+    [uniform-int(min-int, max-int)], is drawn exactly uniformly: it takes the top 63 bits of
+    [Rng.next_int64] and rejects as {!uniform_bits_offset} says, so it consumes one or more RNG
+    outputs; the element is [lo] plus the accepted offset (wrapping, which is exact). A range of at
+    most 2^32 values takes one [Rng.float] scaled by its size n, the formula every release used, so
+    its seeded draws are unchanged. Each of the 2^53 equally likely floats maps to one element, and
+    every element gets between q - 1 and q + 1 of them, where q = floor(2^53/n) >= 2^21 (rounding of
+    the product moves each element's lower boundary by at most one of them). So every element is
+    reachable, and two elements' probabilities differ by a factor of at most (q + 1)/(q - 1), below
+    1 + 10^-6; when n is a power of two the draw is exactly uniform. [pmf] reports the ideal [1/n].
+    The root sampler, likelihood weighting and Warp's sampled lane all draw through it; the native
+    runtime's [uniform_draw] is the same, bit for bit. *)
+let uniform_draw rng lo hi =
+  if not (uniform_span_at_least lo hi uniform_exact_threshold) then
+    lo + int_of_float (Rng.float rng *. float_of_int (hi - lo + 1))
+  else
+    let count = uniform_bits_count lo hi in
+    let rec draw () =
+      match uniform_bits_offset count (Int64.shift_right_logical (Rng.next_int64 rng) 1) with
+      | Some offset -> lo + Int64.to_int offset
+      | None -> draw ()
+    in
+    draw ()
+
 (* Ancestral draw by inverse CDF over NORMALIZED weights (support may carry an unnormalized
    categorical; without normalization a right-edge u would bias toward the first entry). *)
 
@@ -724,15 +796,14 @@ let refusal_cause = function
 let draw_checked rng entries : (Value.t, draw_failure) result =
   Result.map (fun () -> draw rng entries) (check_weights entries)
 
-(** [sample_dist ctx rng d] draws one value from [d] — directly for UniformInt (huge ranges must not
-    materialize a support list), by inverse CDF over the support otherwise. A categorical whose
-    weights [check_weights] refuses is an arithmetic error, like an out-of-range Bernoulli
-    parameter. Valid distributions draw exactly as before. *)
+(** [sample_dist ctx rng d] draws one value from [d] — by {!uniform_draw} for UniformInt (huge
+    ranges must not materialize a support list), by inverse CDF over the support otherwise. A
+    categorical whose weights [check_weights] refuses is an arithmetic error, like an out-of-range
+    Bernoulli parameter. Valid distributions draw exactly as before, except UniformInt ranges above
+    2^32 values. *)
 let sample_dist ctx rng (d : dist_v) : (Value.t, Runtime_err.t) result =
   match d with
-  | UniformInt (lo, hi) ->
-      let n = hi - lo + 1 in
-      Ok (Value.VInt (lo + int_of_float (Rng.float rng *. float_of_int n)))
+  | UniformInt (lo, hi) -> Ok (Value.VInt (uniform_draw rng lo hi))
   | Categorical entries ->
       Result.map_error
         (fun failure -> Runtime_err.Arithmetic (draw_failure_message failure))

@@ -1271,8 +1271,11 @@ let enumerate_rendered ctx store ~cache_dir model_expr : ((string * float) list,
     =
   (* v2 (TYPE.1): a cache written before opaque redaction may hold an opaque posterior's
      structural text, so it is never read again. v3: enumeration now refuses a draw from invalid
-     categorical weights, so a v2 entry may hold a posterior the current driver refuses. *)
-  let prefix = "dist-diff-v3|" in
+     categorical weights, so a v2 entry may hold a posterior the current driver refuses. v4: an
+     earlier driver enumerated uniform-int(min-int, max-int) as empty (its size wrapped to 0), so a
+     v3 entry may hold a posterior missing that branch, which the current driver refuses at the
+     enumeration cap. *)
+  let prefix = "dist-diff-v4|" in
   let key =
     match Canon.hash_top (Kernel.Expr model_expr) with
     | Ok hs -> prefix ^ Hash.to_hex hs.Canon.decl_hash

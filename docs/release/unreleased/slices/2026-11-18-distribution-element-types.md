@@ -53,6 +53,7 @@ same constructor names. `test/cli/review.t` pins the E1012 domain refusal.
 `docs/stdlib.md` (Dist and the implementation errata), `docs/SKILL.md` and the
 upgrade notes state the rule.
 
-Left for later: the root sampling handler resumes with `()` for an empty or
-zero-mass `Categorical`, which is a separate run-time totality fix. Patterns
+Left for later: the root sampling handler resumes with `()` for an empty
+`Categorical` and with the last entry for a zero-mass one, which is a separate
+run-time totality fix. Patterns
 do not refine the element type (no GADT-style matching).

@@ -65,6 +65,69 @@ let test_support_merges_and_drops_zero () =
     [ ("a", 0.5); ("c", 0.5) ]
     (List.map (fun e -> (e.R.data, Option.get e.R.weight)) merged)
 
+let rec permutations = function
+  | [] -> [ [] ]
+  | xs ->
+      List.concat_map
+        (fun x ->
+          let rest = List.filter (fun y -> y != x) xs in
+          List.map (fun p -> x :: p) (permutations rest))
+        xs
+
+(* duplicate weights near the largest float: merged weights, bit for bit, and whether the merged
+   support can be drawn from do not depend on the order of the entries *)
+let test_support_merge_is_order_free () =
+  let ulp = Float.ldexp 1. 971 in
+  let check name elements =
+    let outcome order =
+      let merged = R.merge_support order in
+      ( List.sort compare
+          (List.map (fun e -> (e.R.data, Int64.bits_of_float (Option.get e.R.weight))) merged),
+        Result.is_ok
+          (Infer_dist.check_weights (List.map (fun e -> (e.R.value, Option.get e.R.weight)) merged))
+      )
+    in
+    match List.map outcome (permutations elements) with
+    | first :: rest ->
+        List.iter
+          (fun o -> Alcotest.(check bool) (name ^ ": same in every order") true (o = first))
+          rest;
+        first
+    | [] -> assert false
+  in
+  (* three weights of one value that overflow in some entry orders but not in ascending order *)
+  let q = Float.max_float -. (2. *. ulp) and r = 1.5 *. ulp and p = 0.5 *. ulp in
+  let weights, drawable =
+    check "near-max duplicates" [ element "h" q; element "h" r; element "h" p; element "x" 1.0 ]
+  in
+  Alcotest.(check bool) "near-max duplicates drawable" true drawable;
+  Alcotest.(check (list (pair string int64)))
+    "merged in ascending order"
+    [ ("h", Int64.bits_of_float Float.max_float); ("x", Int64.bits_of_float 1.0) ]
+    weights;
+  (* a light value whose entry-order sum is below half the largest float, beside the largest
+     float: summed in entry order, one order would tie the merged total to infinity *)
+  let b = Float.ldexp 1. 970 -. Float.ldexp 1. 918 and y = 5. *. Float.ldexp 1. 914 in
+  let _, drawable =
+    check "light duplicates beside the largest float"
+      [ element "h" Float.max_float; element "y" b; element "y" y; element "y" y ]
+  in
+  Alcotest.(check bool) "light duplicates drawable" true drawable;
+  (* ordinary duplicates keep their entry-order sum *)
+  let sum order =
+    match R.merge_support (List.map (element "a") order) with
+    | [ e ] -> Int64.bits_of_float (Option.get e.R.weight)
+    | _ -> Alcotest.fail "expected one merged value"
+  in
+  Alcotest.(check int64)
+    "entry order"
+    (Int64.bits_of_float (0.1 +. 0.2 +. 0.3))
+    (sum [ 0.1; 0.2; 0.3 ]);
+  Alcotest.(check int64)
+    "entry order, reversed"
+    (Int64.bits_of_float (0.3 +. 0.2 +. 0.1))
+    (sum [ 0.3; 0.2; 0.1 ])
+
 let test_sampling_is_seeded () =
   let domain = [ element "x" 0.9; element "y" 0.1 ] in
   let draw seed = R.sample_indices [ domain; domain ] ~count:50 ~seed in
@@ -117,5 +180,7 @@ let suite =
       test_decode_first_parameter_outermost;
     Alcotest.test_case "grouping: exact conjunctions" `Quick test_grouping_exact_conjunctions;
     Alcotest.test_case "domains: support merge" `Quick test_support_merges_and_drops_zero;
+    Alcotest.test_case "domains: support merge is order-free near the largest float" `Quick
+      test_support_merge_is_order_free;
     Alcotest.test_case "sampling: seeded streams" `Quick test_sampling_is_seeded;
   ]

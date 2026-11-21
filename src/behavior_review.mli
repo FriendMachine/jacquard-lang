@@ -41,7 +41,10 @@ type element = {
 
 val merge_support : element list -> element list
 (** [merge_support elements] merges equal data at the first position (weights summed) and drops
-    zero-weight elements, keeping declaration order. Every element must carry a weight. *)
+    zero-weight elements, keeping declaration order. Each value's weights are summed in entry order,
+    or in ascending order for every value when the entry-order sum of all the weights is not finite
+    or exceeds half the largest float, so merged weights near the top of the float range do not
+    depend on the order of the entries. Every element must carry a weight. *)
 
 val sample_indices : element list list -> count:int -> seed:int -> int list list
 (** [sample_indices domains ~count ~seed] draws [count] cases: with

@@ -11,6 +11,7 @@
 
 #include "jq_value.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -591,6 +592,10 @@ static bool is_con_named(jq_value v, const char *name) {
 }
 
 static void arith_err(const char *fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
+/* the E0917 refusal of a draw from invalid categorical weights (below) */
+enum { REFUSE_NONE, REFUSE_NEGATIVE, REFUSE_NON_FINITE };
+static int categorical_refusal(jq_value entries);
+static void categorical_refuse(int reason) __attribute__((noreturn));
 static void arith_err(const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
@@ -631,6 +636,8 @@ static void check_dist(jq_value d) {
   }
   if (is_con_named(d, "categorical")) {
     check_entries(jq_con_fields(d)[0]);
+    /* like an empty uniform-int range: no element to draw, enumerate or score */
+    if (is_con_named(jq_con_fields(d)[0], "nil")) arith_err("categorical support is empty");
     return;
   }
   if (is_con_named(d, "uniform-int") && jq_is_int(jq_con_fields(d)[0]) &&
@@ -1129,6 +1136,12 @@ jq_value jq_i_support(jq_rt *rt, const jq_value *a) {
     jq_runtime_failf(JQ_ERROR_TYPE, "%s is not a distribution value", s);
   }
   check_dist(a[0]);
+  /* support is the in-language enumerators' draw: Infer_dist's support
+     builtin refuses invalid categorical weights with E0917; pmf stays raw */
+  if (is_con_named(a[0], "categorical")) {
+    int reason = categorical_refusal(jq_con_fields(a[0])[0]);
+    if (reason != REFUSE_NONE) categorical_refuse(reason);
+  }
   jq_value r = support_of(rt, a[0]);
   jq_drop(a[0]);
   return r;
@@ -1202,6 +1215,39 @@ static double pmf_mass(jq_rt *rt, jq_value d, jq_value v) {
   return mass;
 }
 
+/* Infer_dist.ascending_total: the weights summed smallest first (NaN sorts
+ * below every number, as OCaml's Float.compare puts it). For finite,
+ * nonnegative weights this is the same for every order of the entries. */
+static int weight_cmp(const void *pa, const void *pb) {
+  double a = *(const double *)pa, b = *(const double *)pb;
+  if (isnan(a)) return isnan(b) ? 0 : -1;
+  if (isnan(b)) return 1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+static double ascending_total(jq_value entries) {
+  size_t n = 0;
+  for (jq_value it = entries; is_con_named(it, "cons"); it = jq_con_fields(it)[1]) n++;
+  double *w = malloc((n ? n : 1) * sizeof *w);
+  if (!w) jq_runtime_error("jacquard runtime: out of memory");
+  size_t i = 0;
+  for (jq_value it = entries; is_con_named(it, "cons"); it = jq_con_fields(it)[1])
+    w[i++] = jq_real_val(jq_con_fields(jq_con_fields(it)[0])[1]);
+  qsort(w, n, sizeof *w, weight_cmp);
+  double total = 0.0;
+  for (i = 0; i < n; i++) total += w[i];
+  free(w);
+  return total;
+}
+
+/* Infer_dist.order_free_total: the in-order total when it is finite and at
+ * most half the largest double (no order of finite, nonnegative weights can
+ * then overflow), else the ascending sum */
+static double order_free_total(jq_value entries, double in_order) {
+  if (isfinite(in_order) && in_order <= DBL_MAX / 2.0) return in_order;
+  return ascending_total(entries);
+}
+
 /* one draw from a validated dist: exactly one jq_rng_float */
 static jq_value draw_dist(jq_rt *rt, int64_t *rng, jq_value d) {
   if (is_con_named(d, "uniform-int")) {
@@ -1214,6 +1260,12 @@ static jq_value draw_dist(jq_rt *rt, int64_t *rng, jq_value d) {
   double total = 0.0;
   for (jq_value it = entries; is_con_named(it, "cons"); it = jq_con_fields(it)[1])
     total += jq_real_val(jq_con_fields(jq_con_fields(it)[0])[1]);
+  /* Infer_dist.draw_total: the in-order total when finite, else the
+   * ascending sum when that is finite (the total the weight checks accept) */
+  if (!isfinite(total)) {
+    double ascending = ascending_total(entries);
+    if (isfinite(ascending)) total = ascending;
+  }
   double u = jq_rng_float(rng) * (total > 0.0 ? total : 1.0);
   jq_value picked = 0;
   double acc = 0.0;
@@ -1234,10 +1286,95 @@ static jq_value draw_dist(jq_rt *rt, int64_t *rng, jq_value d) {
   return picked;
 }
 
+/* Infer_dist.check_weights over a validated categorical's entries, with no
+ * random draw: every weight finite and nonnegative (the first offender is
+ * reported), then a finite sum (decided in ascending order, so independent
+ * of the entry order), then a positive sum. */
+enum { CAT_OK, CAT_NO_MASS, CAT_INVALID_WEIGHT, CAT_NONFINITE_TOTAL };
+
+static int categorical_status(jq_value entries, int64_t *index, double *bad) {
+  double total = 0.0;
+  int64_t i = 0;
+  for (jq_value it = entries; is_con_named(it, "cons"); it = jq_con_fields(it)[1], i++) {
+    double w = jq_real_val(jq_con_fields(jq_con_fields(it)[0])[1]);
+    if (!(isfinite(w) && w >= 0.0)) {
+      *index = i;
+      *bad = w;
+      return CAT_INVALID_WEIGHT;
+    }
+    total += w;
+  }
+  double checked = order_free_total(entries, total);
+  if (!isfinite(checked)) {
+    *bad = checked;
+    return CAT_NONFINITE_TOTAL;
+  }
+  return total == 0.0 ? CAT_NO_MASS : CAT_OK;
+}
+
+/* Infer_dist.show_weight: %g, except that every NaN is "nan" (a NaN's sign
+ * and the C library's spelling of it differ between platforms) */
+static const char *show_weight(double w, char *buf, size_t size) {
+  if (isnan(w)) return "nan";
+  snprintf(buf, size, "%g", w);
+  return buf;
+}
+
+/* Infer_dist.draw_failure_message, as the same arithmetic error */
+static void categorical_fail(int status, int64_t index, double bad)
+    __attribute__((noreturn));
+static void categorical_fail(int status, int64_t index, double bad) {
+  char buf[64];
+  switch (status) {
+    case CAT_NO_MASS:
+      arith_err("categorical weights sum to zero; there is nothing to draw");
+    case CAT_INVALID_WEIGHT:
+      arith_err("categorical weight %lld is %s; a draw needs finite, nonnegative weights",
+                (long long)index, show_weight(bad, buf, sizeof buf));
+    default:
+      arith_err("categorical weights sum to %s; a draw needs a finite total",
+                show_weight(bad, buf, sizeof buf));
+  }
+}
+
+/* Infer_dist.invalid_weights: why enumeration and likelihood weighting
+ * refuse to draw from a categorical, whatever the order of its entries —
+ * non-finite when a weight is NaN or infinite, else negative mass when a
+ * weight is negative, else non-finite when the sum in ascending order
+ * overflows; none for
+ * drawable weights and for a zero-mass support. */
+static int categorical_refusal(jq_value entries) {
+  int negative = 0;
+  double total = 0.0;
+  for (jq_value it = entries; is_con_named(it, "cons"); it = jq_con_fields(it)[1]) {
+    double w = jq_real_val(jq_con_fields(jq_con_fields(it)[0])[1]);
+    if (!isfinite(w)) return REFUSE_NON_FINITE;
+    if (w < 0.0) negative = 1;
+    total += w;
+  }
+  if (negative) return REFUSE_NEGATIVE;
+  return isfinite(order_free_total(entries, total)) ? REFUSE_NONE : REFUSE_NON_FINITE;
+}
+
+/* Infer_dist.refusal_diagnostic: the E0917 refusal of such a draw */
+static void categorical_refuse(int reason) {
+  jq_diagnostic_fail(
+      2, "E0917", "Inference failed numerically.",
+      reason == REFUSE_NEGATIVE
+          ? "a categorical to draw from has a negative weight; enumeration and likelihood "
+            "weighting draw only from finite, nonnegative weights"
+          : "a categorical to draw from has a weight or a total that is not finite; enumeration "
+            "and likelihood weighting draw only from finite weights with a finite total",
+      "Rescale the model's weights so every path weight and the total stay finite, "
+      "nonnegative, and representable.");
+  abort();
+}
+
 typedef struct lw_state {
   int64_t rng;
   double weight;
   int possible; /* no exact zero observation factor yet (INF.1) */
+  int legacy;   /* dist.sample-lw: zero mass weighs zero, invalid weights fail */
 } lw_state;
 
 /* jq_perform's root interception during a weighted run (before grants —
@@ -1251,13 +1388,30 @@ jq_value jq_lw_sample(jq_rt *rt, jq_value dv) {
   }
   check_dist(dv);
   if (is_con_named(dv, "categorical")) {
-    /* a support with no mass is an impossible draw (INF.1; the legacy driver ignores it) */
-    jq_value entries = support_of(rt, dv);
-    double total = 0.0;
-    for (jq_value it = entries; is_con_named(it, "cons"); it = jq_con_fields(it)[1])
-      total += jq_real_val(jq_con_fields(jq_con_fields(it)[0])[1]);
-    jq_drop(entries);
-    if (total == 0.0) st->possible = 0;
+    jq_value entries = jq_con_fields(dv)[0];
+    int64_t index = 0;
+    double bad = 0.0;
+    int status = categorical_status(entries, &index, &bad);
+    if (status == CAT_NO_MASS) {
+      /* a support with no mass is an impossible draw (INF.1); the legacy
+         driver weighs the run zero. Either resumes with the usual draw. */
+      if (st->legacy) st->weight = 0.0;
+      else st->possible = 0;
+    } else if (status != CAT_OK) {
+      if (st->legacy) categorical_fail(status, index, bad);
+      /* -v1: a still-possible run stops the driver at the draw with E0917,
+         as enumeration refuses the same site, whatever the run would observe
+         later. The refusal is the driver's own outcome, so it leaves this
+         driver's inference context first: only enclosing drivers wrap it. A
+         run that is already impossible draws over Infer_dist.draw_total and
+         carries on (enumeration never reaches a site behind a zero factor);
+         that is the released driver's pick unless only the entry-order total
+         overflows, where the ascending sum is used. */
+      if (st->possible) {
+        jq_runtime_inference_leave();
+        categorical_refuse(categorical_refusal(entries));
+      }
+    }
   }
   jq_value x = draw_dist(rt, &st->rng, dv);
   jq_drop(dv);
@@ -1310,7 +1464,7 @@ jq_value jq_i_dist_sample_lw(jq_rt *rt, const jq_value *a) {
   int64_t master = jq_int_val(a[2]);
   if (samples <= 0)
     jq_runtime_error("arithmetic error: dist.sample-lw needs a positive sample count");
-  lw_state st = { 0, 1.0, 1 };
+  lw_state st = { 0, 1.0, 1, 1 };
   lw_run *runs = malloc((size_t)samples * sizeof(lw_run));
   if (!runs) jq_runtime_error("jacquard runtime: out of memory");
   /* each run is the interpreter's fresh state machine: outer in-language
@@ -1389,9 +1543,10 @@ jq_value jq_i_dist_sample_lw(jq_rt *rt, const jq_value *a) {
  *
  * Runs exactly as jq_i_dist_sample_lw (same stream, same run isolation) and
  * returns the possible runs (no exact zero observation factor, no draw from a
- * zero-mass categorical support), oldest first,
- * as (value, unnormalized weight) pairs; the prelude's dist.sample-lw-v1
- * classifies them. Matches Infer_dist.lw_surviving_runs. */
+ * zero-mass categorical support), oldest first, as (value, unnormalized
+ * weight) pairs; the prelude's dist.sample-lw-v1 classifies them. A possible
+ * run's draw from invalid categorical weights stops it with E0917
+ * (jq_lw_sample). Matches Infer_dist.lw_surviving_runs. */
 jq_value jq_i_dist_sample_lw_weights_v1(jq_rt *rt, const jq_value *a) {
   jq_value thunk = a[0];
   if (!jq_is_int(a[1]) || !jq_is_int(a[2])) {
@@ -1407,7 +1562,7 @@ jq_value jq_i_dist_sample_lw_weights_v1(jq_rt *rt, const jq_value *a) {
   if (samples <= 0)
     jq_runtime_error(
         "arithmetic error: dist.sample-lw-weights-v1 needs a positive sample count");
-  lw_state st = { 0, 1.0, 1 };
+  lw_state st = { 0, 1.0, 1, 0 };
   lw_run *runs = malloc((size_t)samples * sizeof(lw_run));
   if (!runs) jq_runtime_error("jacquard runtime: out of memory");
   int64_t kept = 0;
@@ -1450,10 +1605,17 @@ jq_value jq_i_dist_sample_lw_weights_v1(jq_rt *rt, const jq_value *a) {
   return list;
 }
 
-/* the root sampler's draw (jq_g_dist_sample's core): validates, then one
- * draw from rt->dist_rng — the grant's single seeded stream */
+/* the root sampler's draw (jq_g_dist_sample's core): validates (a categorical
+ * whose weights cannot be drawn from is an arithmetic error), then one draw
+ * from rt->dist_rng — the grant's single seeded stream */
 jq_value jq_g_dist_draw(jq_rt *rt, jq_value d) {
   check_dist(d);
+  if (is_con_named(d, "categorical")) {
+    int64_t index = 0;
+    double bad = 0.0;
+    int status = categorical_status(jq_con_fields(d)[0], &index, &bad);
+    if (status != CAT_OK) categorical_fail(status, index, bad);
+  }
   jq_value x = draw_dist(rt, &rt->dist_rng, d);
   jq_drop(d);
   return x;

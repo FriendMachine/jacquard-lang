@@ -552,22 +552,39 @@ type element = {
   weight : float option;
 }
 
-(* a distribution's support: equal values merged at their first position, zero weights dropped *)
+(* a distribution's support: equal values merged at their first position, zero weights dropped. A
+   value's merged weight is its weights summed in entry order, unless the whole support's
+   entry-order sum is not finite or exceeds half the largest float: then every value's weights are
+   summed in ascending order, so merged weights near the top of the float range, and whether the
+   merged support overflows, do not depend on the order of the entries *)
 let merge_support elements =
-  let merged =
+  let weight e = Option.get e.weight in
+  let in_order ws = List.fold_left ( +. ) 0.0 ws in
+  let ascending = not (Infer_dist.entry_order_suffices (in_order (List.map weight elements))) in
+  let groups =
     List.fold_left
       (fun acc e ->
-        if List.exists (fun x -> String.equal x.data e.data) acc then
+        if List.exists (fun (x, _) -> String.equal x.data e.data) acc then
           List.map
-            (fun x ->
-              if String.equal x.data e.data then
-                { x with weight = Some (Option.get x.weight +. Option.get e.weight) }
-              else x)
+            (fun (x, ws) -> if String.equal x.data e.data then (x, weight e :: ws) else (x, ws))
             acc
-        else acc @ [ e ])
+        else acc @ [ (e, [ weight e ]) ])
       [] elements
   in
-  List.filter (fun e -> Option.get e.weight > 0.) merged
+  List.filter_map
+    (fun (x, ws) ->
+      let ws = List.rev ws in
+      let total =
+        if ascending then Infer_dist.ascending_total (List.map (fun w -> ((), w)) ws)
+        else in_order ws
+      in
+      if total > 0. then Some { x with weight = Some total } else None)
+    groups
+
+let weights_cause = "its weights are not finite and non-negative with a positive total"
+
+let merged_weights_cause =
+  "its weights, after merging equal values, are not finite and non-negative with a positive total"
 
 let domain_elements ctx kind name value =
   let raw =
@@ -581,16 +598,12 @@ let domain_elements ctx kind name value =
         | Ok d -> (
             match Infer_dist.support ctx d with
             | Error error -> Error (runtime_cause error)
-            | Ok entries ->
-                let total = List.fold_left (fun acc (_, w) -> acc +. w) 0. entries in
-                if
-                  List.exists
-                    (fun (_, w) -> Float.is_nan w || w < 0. || not (Float.is_finite w))
-                    entries
-                  || (not (Float.is_finite total))
-                  || total <= 0.
-                then Error "its weights are not finite and non-negative with a positive total"
-                else Ok (List.map (fun (v, w) -> (v, Some w)) entries)))
+            | Ok entries -> (
+                (* the weight rule every categorical draw uses: whether the sum overflows does not
+                   depend on the order of the entries *)
+                match Infer_dist.check_weights entries with
+                | Error _ -> Error weights_cause
+                | Ok () -> Ok (List.map (fun (v, w) -> (v, Some w)) entries))))
   in
   match raw with
   | Error cause -> refuse ~code:"E1012" "domain `%s`: %s" name cause
@@ -610,7 +623,16 @@ let domain_elements ctx kind name value =
       | Distribution_domain -> (
           match merge_support rendered with
           | [] -> refuse ~code:"E1012" "domain `%s` has no value of positive weight" name
-          | kept -> Ok kept))
+          | kept -> (
+              (* sampled cases draw from the merged support, so its weights must be drawable too:
+                 merging equal values can make a weight, or the sum, overflow. The raw weights
+                 passed, so the cause says the merge is what failed *)
+              match
+                Infer_dist.check_weights
+                  (List.map (fun e -> (e.value, Option.value e.weight ~default:0.)) kept)
+              with
+              | Error _ -> refuse ~code:"E1012" "domain `%s`: %s" name merged_weights_cause
+              | Ok () -> Ok kept)))
 
 (* --- evaluation context --- *)
 

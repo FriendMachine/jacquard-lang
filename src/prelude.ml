@@ -1006,10 +1006,22 @@ let wire_builtins (ctx : Eval.ctx) : (unit, Diag.t list) result =
             (Runtime_err.Type_error
                (Printf.sprintf "dist.sample-lw-weights-v1 expects a thunk and two ints, got %s"
                   (String.concat ", " (List.map Value.display args)))));
+  (* support is the in-language enumerators' draw (dist.enumerate, dist.enumerate-v1): it refuses a
+     categorical with a negative or non-finite weight, or an overflowing total, with E0917, as the
+     CLI's enumeration and likelihood weighting refuse the same draw; pmf stays raw *)
+  let refuse_invalid = function
+    | Infer_dist.Categorical entries as d -> (
+        match Infer_dist.invalid_weights entries with
+        | Some reason -> Error (Runtime_err.Diagnostic (Infer_dist.refusal_diagnostic reason))
+        | None -> Ok d)
+    | d -> Ok d
+  in
   optional "support" (fun args ->
       match args with
       | [ dv ] ->
-          Result.bind (Infer_dist.dist_of_value ctx dv) (fun d ->
+          Result.bind
+            (Result.bind (Infer_dist.dist_of_value ctx dv) refuse_invalid)
+            (fun d ->
               Result.bind (Infer_dist.support ctx d) (fun entries ->
                   (* a Bernoulli's support also makes its two booleans *)
                   charge (match d with Infer_dist.Bernoulli _ -> 2 | _ -> 0);

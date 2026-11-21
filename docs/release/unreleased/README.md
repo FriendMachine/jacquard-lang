@@ -108,12 +108,48 @@ Notes for the next release's upgrade section, collected as changes land:
   as without the grant: the driver's (or document's, or configuration's) seed
   decides, a model's `observe` no longer fails with E0902, exact enumeration
   explores every path, and a root draw after a driver call follows `--seed`
-  as if the driver were absent. Native `dist.sample-lw` binaries change the
-  same way. Outputs of programs that combined a dist grant with one of these
+  as if the driver were absent. Native binaries running `dist.sample-lw`,
+  `dist.sample-lw-weights-v1` or `dist.sample-lw-v1` change the same way. Outputs of programs that combined a dist grant with one of these
   drivers therefore change. `jacquard run --record` with the grant now
   records a driver's draws as captured steps (`result missing`), as it already
   did without the grant. The Warp cache tag moves from `warp-v2` to `warp-v3`,
   so every cached Warp verdict is recomputed once. No identity changes.
+- **Categorical draws follow their weights (correction).** An empty
+  `Categorical([])` is now refused wherever a distribution is recognised, like
+  an empty `UniformInt` range (`arithmetic error: categorical support is
+  empty`): `support` and `pmf` on it, the released `dist.enumerate` and
+  `dist.enumerate-v1` stop instead of returning `nil` or an impossible
+  outcome, and `jacquard infer enumerate` reports E0902 instead of E0901. The
+  root sampler (`--allow dist`) refuses a categorical with a negative, NaN or
+  infinite weight, or whose weights sum to infinity or zero, where it used to
+  return `()`, the last entry, or an entry the weights did not select.
+  Whether weights sum to infinity is decided by their sum in ascending order,
+  so it does not depend on the order of the entries. Enumeration and
+  likelihood weighting refuse such a draw (other than zero mass) with E0917 at
+  the draw, whatever the model observes afterwards and whichever entry comes
+  first: `jacquard infer enumerate` and `infer lw`, `jacquard dist-diff` and a
+  model document's `enumerate` and `lw` results report that numeric failure
+  (`numerical`), and the in-language `dist.enumerate`, `dist.enumerate-v1`,
+  `dist.sample-lw-v1` and `dist.sample-lw-weights-v1` stop with E0917 instead
+  of returning a posterior or an `err` value. `support` therefore refuses such
+  weights too, and so does the prelude's `dist.pmf`, which folds over
+  `support`; the `pmf` builtin stays raw. Likelihood weighting refuses only
+  the draws its runs reach. The released `dist.sample-lw` reports E0901
+  when every run drew from zero mass (a zero-mass run beside possible ones is
+  a zero-probability row) and E0902 for invalid weights.
+  `posterior.run-exact-v1` on a model sampling `Categorical([])` reports
+  `E1544 … E0911` instead of `E1545`. Warp's sampled and exhaustive lanes fail
+  such a generator instead of crashing or passing over zero cases, and the
+  Warp cache tag moves from `warp-v3` to `warp-v5`, so cached verdicts are
+  recomputed once. Warp's sampled lane and `jacquard review`'s sampled cases
+  draw over the same total as the root sampler, and `jacquard review` judges
+  a Distribution domain's total by the same ascending-sum rule (E1012), also
+  after merging equal values (in exhaustive reviews too, and whatever the
+  order of the equal values). The `jacquard dist-diff` posterior cache key moves from
+  `dist-diff-v2` to `dist-diff-v3` for the same reason: an older entry may hold
+  a posterior from weights enumeration now refuses. A NaN weight in these messages is written `nan` on every
+  platform. Valid distributions draw exactly as before, in the interpreter and
+  in native binaries. No identity changes.
 - **Bernoulli and UniformInt have element types (soundness fix).** A
   construction of the prelude's `Bernoulli(p)` is now a `Distribution Bool` and
   of `UniformInt(lo, hi)` a `Distribution Int`, matching what sampling, `pmf`,

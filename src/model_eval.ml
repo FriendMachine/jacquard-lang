@@ -257,7 +257,7 @@ let run_one ~ctx ~allows ~seed ~out ~policy (r : Model_doc.resolved) =
               match failure with
               | Infer_dist.Impossible -> "impossible"
               | Infer_dist.Exhausted -> "exhausted"
-              | Infer_dist.Numeric _ -> "numerical"
+              | Infer_dist.Numeric _ | Infer_dist.Invalid_draw _ -> "numerical"
             in
             Inference_failure { sampled; explored; failure })
   in

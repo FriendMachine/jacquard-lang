@@ -31,7 +31,7 @@ let prelude_op ctx op name =
   | Some { Resolve.hash; _ } -> Hash.equal hash op
   | None -> false
 
-let version = "warp-v3"
+let version = "warp-v5"
 
 type verdict = Pass of int | Fail of { soft : string list; hard : string option } | NoChecks
 
@@ -344,13 +344,24 @@ let choice_value ctx (d : Infer_dist.dist_v) (i : int) : (Value.t, Runtime_err.t
           else Ok (Value.VCon { con = t; name = "true"; args = [] })
       | _ -> Error (Runtime_err.Unresolved "prelude bool constructors"))
 
+(* A sample site whose weights cannot be drawn from (a negative or non-finite weight, an overflowing
+   sum, or zero total mass) is a generator defect in both lanes: the property errors instead of
+   passing on draws that do not follow the weights, or vacuously over no cases. *)
+let check_site_weights (entries : (Value.t * float) list) : (unit, string) result =
+  Result.map_error
+    (fun failure ->
+      Runtime_err.to_string (Runtime_err.Arithmetic (Infer_dist.draw_failure_message failure)))
+    (Infer_dist.check_weights entries)
+
 let fresh_index rng (d : Infer_dist.dist_v) : int =
   match d with
   | Infer_dist.Bernoulli p -> if Infer_dist.Rng.float rng < p then 1 else 0
   | Infer_dist.UniformInt (lo, hi) ->
       int_of_float (Infer_dist.Rng.float rng *. float_of_int (hi - lo + 1))
   | Infer_dist.Categorical entries ->
-      let total = List.fold_left (fun acc (_, p) -> acc +. p) 0.0 entries in
+      (* the interpreter draw's total, so a site [check_site_weights] accepts is drawn by its
+         weights even when only its entry-order sum overflows *)
+      let total = Infer_dist.draw_total entries in
       let u = Infer_dist.Rng.float rng *. if total > 0.0 then total else 1.0 in
       let rec go i acc = function
         | [] -> max 0 (List.length entries - 1)
@@ -387,22 +398,29 @@ let drive_prop ctx ~rng ~(forced : int list) (thunk : Value.t) :
         match Infer_dist.dist_of_value ctx dv with
         | Error e -> Error (`Runtime (Runtime_err.to_string e))
         | Ok d -> (
-            let arity = choice_arity d in
-            let pick, rest =
-              match forced with
-              | i :: rest -> ((if i < arity then Some i else None), rest)
-              | [] -> (Some (fresh_index rng d), [])
-            in
-            match pick with
-            | None -> Error `Diverged
-            | Some i -> (
-                match choice_value ctx d i with
-                | Error e -> Error (`Runtime (Runtime_err.to_string e))
-                | Ok v -> (
-                    log := { c_dist = d; c_index = i } :: !log;
-                    match Eval.resume_captured_state ctx kont v with
+            match
+              match d with
+              | Infer_dist.Categorical entries -> check_site_weights entries
+              | Infer_dist.Bernoulli _ | Infer_dist.UniformInt _ -> Ok ()
+            with
+            | Error cause -> Error (`Runtime cause)
+            | Ok () -> (
+                let arity = choice_arity d in
+                let pick, rest =
+                  match forced with
+                  | i :: rest -> ((if i < arity then Some i else None), rest)
+                  | [] -> (Some (fresh_index rng d), [])
+                in
+                match pick with
+                | None -> Error `Diverged
+                | Some i -> (
+                    match choice_value ctx d i with
                     | Error e -> Error (`Runtime (Runtime_err.to_string e))
-                    | Ok state -> go state rest))))
+                    | Ok v -> (
+                        log := { c_dist = d; c_index = i } :: !log;
+                        match Eval.resume_captured_state ctx kont v with
+                        | Error e -> Error (`Runtime (Runtime_err.to_string e))
+                        | Ok state -> go state rest)))))
     | Ok (Eval.COp { op; name = "observe"; args = [ _; _ ]; kont; _ })
       when prelude_op ctx op "observe" -> (
         (* sampling lane: conditioning is ignored (weights are an enumeration
@@ -522,8 +540,10 @@ let run_prop_sampling ctx ~seed ~samples (thunk : Value.t) : (verdict * string, 
 
 (** [run_prop_exhaustive ctx ~budget thunk] — the M3 thesis as a product feature: the multi-shot
     machinery explores every support element at every sample site. Verified branches are weight>0
-    completions; zero-weight branches prune without counting. Blowing the budget is a clean refusal
-    (E0905), never a partial pass. *)
+    completions; zero-weight branches prune without counting. A sample site whose weights cannot be
+    drawn from (see [check_site_weights]), including one with zero total mass, is an E0902 failure
+    rather than a vacuous pass. Blowing the budget is a clean refusal (E0905), never a partial pass.
+*)
 
 let run_prop_sampling ctx ~seed ~samples thunk =
   guard_fuel_string ctx (fun () -> run_prop_sampling ctx ~seed ~samples thunk)
@@ -557,19 +577,22 @@ let run_prop_exhaustive ctx ~budget (thunk : Value.t) : (verdict * string, Diag.
             Result.bind (Infer_dist.dist_of_value ctx dv) (fun d -> Infer_dist.support ctx d)
           with
           | Error e -> Error (Runtime_err.to_string e)
-          | Ok support ->
-              last_site := Printf.sprintf "a %d-way sample site" (List.length support);
-              let rec go = function
-                | [] -> Ok ()
-                | (v, p) :: rest -> (
-                    match Eval.resume_captured_state ctx kont v with
-                    | Error e -> Error (Runtime_err.to_string e)
-                    | Ok state -> (
-                        match explore state (weight *. p) entries with
-                        | Error e -> Error e
-                        | Ok () -> go rest))
-              in
-              go support)
+          | Ok support -> (
+              match check_site_weights support with
+              | Error cause -> Error cause
+              | Ok () ->
+                  last_site := Printf.sprintf "a %d-way sample site" (List.length support);
+                  let rec go = function
+                    | [] -> Ok ()
+                    | (v, p) :: rest -> (
+                        match Eval.resume_captured_state ctx kont v with
+                        | Error e -> Error (Runtime_err.to_string e)
+                        | Ok state -> (
+                            match explore state (weight *. p) entries with
+                            | Error e -> Error e
+                            | Ok () -> go rest))
+                  in
+                  go support))
       | Ok (Eval.COp { op; name = "observe"; args = [ dv; v ]; kont; _ })
         when prelude_op ctx op "observe" -> (
           match Result.bind (Infer_dist.dist_of_value ctx dv) (fun d -> Infer_dist.pmf ctx d v) with

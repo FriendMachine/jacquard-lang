@@ -71,7 +71,11 @@ allowance equal to `--fuel` and no root handler; a failure or fuel exhaustion
 there is E1012 with its cause. A `List` contributes its elements
 in order; duplicates are kept as distinct cases. A `Distribution` contributes
 its support in declaration order (`Infer_dist.support`), equal values merged at
-their first position with summed weight, zero-weight values dropped; its
+their first position with summed weight, zero-weight values dropped (a value's
+weights are summed in entry order, unless the entry-order sum of all the
+support's weights is not finite or exceeds half the largest float; then every
+value's weights are summed in ascending order, so the merged weights do not
+depend on the order of the entries); its
 weights are recorded for REV.1. An empty domain, a non-finite or negative
 weight, a uniform range above 10,000 values, or a value containing a secret,
 closure, continuation, operation, task, channel, hash, code value or other
@@ -100,7 +104,12 @@ draw); case i's value for parameter k is the (i+1)-th `Infer_dist.draw` from
 stream k over domain k's merged, zero-dropped support in declaration order
 (inverse CDF over the weights normalized by their sum; `UniformInt` is
 materialized, so its 10,000-value bound applies). A domain whose total weight is
-not finite and positive is E1012. Both versions draw from equal domains with the
+not finite and positive is E1012, before and after merging, in exhaustive
+reviews too (the cause names the merge when only the merged support fails): whether the total
+overflows is decided by the weights summed in ascending order, as for every
+categorical draw (`Infer_dist.check_weights`), so it does not depend on the
+order of the entries, and a draw whose entry-order total alone overflows uses
+the ascending sum. Both versions draw from equal domains with the
 same streams, so they draw equal values. Duplicate draws are kept as distinct
 cases. The review status is `sampled`.
 

@@ -298,9 +298,9 @@ typedef struct jq_rt {
      (the interpreter runs each weighted model as a fresh state machine, so
      outer in-language handlers are invisible to it — entries below the
      floor stay untouched); lw points at the driver's per-run state, giving
-     sample/observe their ROOT interception — after grants, exactly the
-     interpreter's ladder (in-language above the floor, then grants, then
-     the inference driver, then unhandled). */
+     sample/observe their ROOT interception — before grants, exactly the
+     interpreter's ladder (in-language above the floor, then the inference
+     driver's own sample/observe, then grants, then unhandled). */
   uint32_t hs_floor;
   void *lw;
 } jq_rt;

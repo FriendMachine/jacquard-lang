@@ -1269,18 +1269,23 @@ let posterior_cache_store ~cache_dir key (entries : (Form.t * float) list) : uni
 (* a rendered posterior: (display key, probability) sorted for deterministic diffing *)
 let enumerate_rendered ctx store ~cache_dir model_expr : ((string * float) list, Diag.t list) result
     =
+  (* v2 (TYPE.1): a cache written before opaque redaction may hold an opaque posterior's
+     structural text, so it is never read again. v3: enumeration now refuses a draw from invalid
+     categorical weights, so a v2 entry may hold a posterior the current driver refuses. *)
+  let prefix = "dist-diff-v3|" in
   let key =
     match Canon.hash_top (Kernel.Expr model_expr) with
-    (* v2 (TYPE.1): a cache written before opaque redaction may hold an opaque posterior's
-       structural text, so it is never read again *)
-    | Ok hs -> "dist-diff-v2|" ^ Hash.to_hex hs.Canon.decl_hash
-    | Error _ -> "dist-diff-v2|unhashable"
+    | Ok hs -> prefix ^ Hash.to_hex hs.Canon.decl_hash
+    | Error _ -> prefix ^ "unhashable"
+  in
+  let short =
+    String.sub key (String.length prefix) (min 8 (String.length key - String.length prefix))
   in
   ignore store;
   ignore ();
   match posterior_cache_lookup ~cache_dir key with
   | Some entries ->
-      Printf.eprintf "dist-diff: cached posterior %s\n%!" (String.sub key 13 8);
+      Printf.eprintf "dist-diff: cached posterior %s\n%!" short;
       Ok
         (List.map
            (fun (v, p) ->
@@ -1294,7 +1299,7 @@ let enumerate_rendered ctx store ~cache_dir model_expr : ((string * float) list,
       match Infer_dist.enumerate ctx (Eval.expr_state model_expr) with
       | Error ds -> Error ds
       | Ok posterior ->
-          Printf.eprintf "dist-diff: enumerated %s\n%!" (String.sub key 13 8);
+          Printf.eprintf "dist-diff: enumerated %s\n%!" short;
           (* TYPE.1: entries match by their structural rendering and print redacted; a posterior
              holding an opaque value is never cached, since a cache hit keeps only the key *)
           let rendered = List.map (fun (v, p) -> (Value.show v, p)) posterior.Infer_dist.entries in

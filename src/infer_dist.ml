@@ -158,7 +158,11 @@ let dist_of_value (ctx : Eval.ctx) (v : Value.t) : (dist_v, Runtime_err.t) resul
               (Runtime_err.Type_error
                  (Printf.sprintf "categorical expects a list of pairs, got %s" (Value.display v)))
       in
-      Result.map (fun es -> Categorical es) (entries_of entries)
+      Result.bind (entries_of entries) (function
+        | [] ->
+            (* like an empty uniform-int range: no element to draw, enumerate or score *)
+            Error (Runtime_err.Arithmetic "categorical support is empty")
+        | es -> Ok (Categorical es))
   | VCon { name = "uniform-int"; args = [ VInt lo; VInt hi ]; _ } ->
       if hi < lo then
         Error (Runtime_err.Arithmetic (Printf.sprintf "uniform-int range %d..%d is empty" lo hi))
@@ -609,8 +613,38 @@ end
 
 (* Ancestral draw by inverse CDF over NORMALIZED weights (support may carry an unnormalized
    categorical; without normalization a right-edge u would bias toward the first entry). *)
-let draw rng entries =
+
+(** [ascending_total entries] sums the weights smallest first. For finite, nonnegative weights the
+    result is the same for every order of the entries, so it decides whether a total overflows. The
+    native runtime's [ascending_total] is the same. *)
+let ascending_total entries =
+  List.fold_left ( +. ) 0.0 (List.sort Float.compare (List.map snd entries))
+
+(** [entry_order_suffices in_order] holds when [in_order], finite, nonnegative weights summed in
+    entry order, is finite and at most half the largest float: then no order of those weights can
+    overflow, so the entry-order sum can stand in for {!ascending_total}. *)
+let entry_order_suffices in_order = Float.is_finite in_order && in_order <= Float.max_float /. 2.0
+
+(** [order_free_total entries in_order] is [in_order], the weights summed in entry order, when
+    {!entry_order_suffices} holds, else {!ascending_total}. Only weights near the top of the float
+    range pay for the sort. *)
+let order_free_total entries in_order =
+  if entry_order_suffices in_order then in_order else ascending_total entries
+
+(** [draw_total entries] is the total an inverse-CDF draw scales its uniform by: the weights summed
+    in entry order when that is finite (so valid draws keep their stream), else {!ascending_total}
+    when that is finite (the total {!check_weights} accepts), else the entry-order total. Every
+    categorical draw ({!draw}, Warp's sampled lane) uses it, so they pick the same entry for the
+    same uniform; the native runtime's [draw_dist] computes the same total. *)
+let draw_total entries =
   let total = List.fold_left (fun acc (_, p) -> acc +. p) 0.0 entries in
+  if Float.is_finite total then total
+  else
+    let ascending = ascending_total entries in
+    if Float.is_finite ascending then ascending else total
+
+let draw rng entries =
+  let total = draw_total entries in
   let u = Rng.float rng *. if total > 0.0 then total else 1.0 in
   let rec go acc = function
     | [] -> ( match List.rev entries with (x, _) :: _ -> x | [] -> Value.unit_v)
@@ -618,18 +652,98 @@ let draw rng entries =
   in
   go 0.0 entries
 
+(** [show_weight w] renders a weight in a draw failure as C's [%g] does, except that every NaN is
+    [nan]: the sign of a NaN, and C libraries' spelling of it, differ between platforms. The native
+    runtime's [show_weight] is the same. *)
+let show_weight w = if Float.is_nan w then "nan" else Printf.sprintf "%g" w
+
+(** Why a categorical's weights cannot be drawn from: the first weight that is negative or not
+    finite (its index and value), a sum that overflows, or a sum that is exactly zero. *)
+type draw_failure = No_mass | Invalid_weight of int * float | Nonfinite_total of float
+
+(** [check_weights entries] validates a support for a draw without touching any random stream: every
+    weight finite and nonnegative (the first offender is reported), then a finite sum, then a
+    positive sum. Whether the sum is finite is decided by the weights summed in ascending order
+    ({!order_free_total}), so it does not depend on the order of the entries. The native runtime's
+    [categorical_status] applies the same order. *)
+let check_weights (entries : (Value.t * float) list) : (unit, draw_failure) result =
+  let rec go index total = function
+    | [] ->
+        let checked = order_free_total entries total in
+        if not (Float.is_finite checked) then Error (Nonfinite_total checked)
+        else if total = 0.0 then Error No_mass
+        else Ok ()
+    | (_, w) :: rest ->
+        if Float.is_finite w && w >= 0.0 then go (index + 1) (total +. w) rest
+        else Error (Invalid_weight (index, w))
+  in
+  go 0 0.0 entries
+
+(** The run-time message for a categorical draw that cannot be made; the native runtime prints the
+    same text. *)
+let draw_failure_message = function
+  | No_mass -> "categorical weights sum to zero; there is nothing to draw"
+  | Invalid_weight (index, w) ->
+      Printf.sprintf "categorical weight %d is %s; a draw needs finite, nonnegative weights" index
+        (show_weight w)
+  | Nonfinite_total total ->
+      Printf.sprintf "categorical weights sum to %s; a draw needs a finite total"
+        (show_weight total)
+
+(** The numeric failures of INF.1's shared classification; [numeric] is mirrored by the prelude's
+    [inference-numeric-v1]. *)
+type numeric = Underflow | Non_finite | Negative_mass
+
+(** [invalid_weights entries] is why enumeration and likelihood weighting refuse to draw from a
+    categorical, independent of the order of its entries: [Non_finite] when a weight is NaN or
+    infinite, else [Negative_mass] when a weight is negative, else [Non_finite] when the finite,
+    nonnegative weights summed in ascending order are not finite ({!order_free_total}); [None] for
+    weights a draw accepts, and for a zero-mass support, which is an impossible draw rather than a
+    numeric failure. The native runtime's [categorical_refusal] ranks the same way. *)
+let invalid_weights (entries : (Value.t * float) list) : numeric option =
+  if List.exists (fun (_, w) -> not (Float.is_finite w)) entries then Some Non_finite
+  else if List.exists (fun (_, w) -> w < 0.0) entries then Some Negative_mass
+  else if
+    not
+      (Float.is_finite
+         (order_free_total entries (List.fold_left (fun acc (_, w) -> acc +. w) 0.0 entries)))
+  then Some Non_finite
+  else None
+
+(** The cause of the E0917 refusal of such a draw; the native runtime prints the same text. *)
+let refusal_cause = function
+  | Negative_mass ->
+      "a categorical to draw from has a negative weight; enumeration and likelihood weighting draw \
+       only from finite, nonnegative weights"
+  | Non_finite | Underflow ->
+      "a categorical to draw from has a weight or a total that is not finite; enumeration and \
+       likelihood weighting draw only from finite weights with a finite total"
+
+(** [draw_checked rng entries] is [draw rng entries] for a support [check_weights] accepts, with the
+    same single [Rng.float]; otherwise the failure, with no random draw. *)
+let draw_checked rng entries : (Value.t, draw_failure) result =
+  Result.map (fun () -> draw rng entries) (check_weights entries)
+
 (** [sample_dist ctx rng d] draws one value from [d] — directly for UniformInt (huge ranges must not
-    materialize a support list), by inverse CDF over the support otherwise. *)
+    materialize a support list), by inverse CDF over the support otherwise. A categorical whose
+    weights [check_weights] refuses is an arithmetic error, like an out-of-range Bernoulli
+    parameter. Valid distributions draw exactly as before. *)
 let sample_dist ctx rng (d : dist_v) : (Value.t, Runtime_err.t) result =
   match d with
   | UniformInt (lo, hi) ->
       let n = hi - lo + 1 in
       Ok (Value.VInt (lo + int_of_float (Rng.float rng *. float_of_int n)))
-  | _ -> Result.map (draw rng) (support ctx d)
+  | Categorical entries ->
+      Result.map_error
+        (fun failure -> Runtime_err.Arithmetic (draw_failure_message failure))
+        (draw_checked rng entries)
+  | Bernoulli _ -> Result.map (draw rng) (support ctx d)
 
 (** [likelihood_weighting ctx ~seed ~samples model] obtains one immutable initial state from
     [model], validates it, then reuses it for K independent weighted executions. The factory is
-    evaluated exactly once; recovery-marked initial states fail before the first execution. *)
+    evaluated exactly once; recovery-marked initial states fail before the first execution. A draw
+    from a zero-mass categorical gives its run weight zero; a draw from a categorical with a
+    negative or non-finite weight (or an overflowing sum) is a runtime failure (E0902). *)
 let likelihood_weighting (ctx : Eval.ctx) ~seed ~samples (model : unit -> Eval.state) :
     (posterior, Diag.t list) result =
   let master = Rng.make seed in
@@ -645,9 +759,19 @@ let likelihood_weighting (ctx : Eval.ctx) ~seed ~samples (model : unit -> Eval.s
         Ok ()
     | Ok (Validated_op { op; name = "sample"; args = [ dv ]; resume; _ })
       when is_dist_op ctx op "sample" -> (
-        match Result.bind (dist_of_value ctx dv) (sample_dist ctx rng) with
+        let drawn =
+          Result.bind (dist_of_value ctx dv) (function
+            | Categorical entries -> (
+                match check_weights entries with
+                | Ok () -> Ok (draw rng entries, weight)
+                (* a zero-mass draw is an impossible run: weight zero, resumed with the same draw *)
+                | Error No_mass -> Ok (draw rng entries, 0.0)
+                | Error failure -> Error (Runtime_err.Arithmetic (draw_failure_message failure)))
+            | d -> Result.map (fun x -> (x, weight)) (sample_dist ctx rng d))
+        in
+        match drawn with
         | Error e -> Error e
-        | Ok x ->
+        | Ok (x, weight) ->
             Result.bind (Eval.resume_validated_state ctx resume x) (fun state ->
                 one_run rng state weight))
     | Ok (Validated_op { op; name = "observe"; args = [ dv; v ]; resume; _ })
@@ -699,8 +823,9 @@ let likelihood_weighting (ctx : Eval.ctx) ~seed ~samples (model : unit -> Eval.s
 
 (* --- typed outcomes (INF.1) --- *)
 
-type numeric = Underflow | Non_finite | Negative_mass
-type failure = Impossible | Exhausted | Numeric of numeric
+(** [Invalid_draw]: a sample site's categorical weights were refused ({!invalid_weights}), so the
+    search stopped there; it is an E0917 numeric failure like [Numeric]. *)
+type failure = Impossible | Exhausted | Numeric of numeric | Invalid_draw of numeric
 
 type metadata = {
   exact : bool;  (** exact enumeration, else likelihood weighting *)
@@ -743,6 +868,11 @@ let classify (leaves : weighted list) : (posterior, failure) result =
     else if total = 0.0 then Error (Numeric Underflow)
     else Ok (merge_normalize total leaves)
 
+(** [refusal_diagnostic reason] is the E0917 diagnostic of a draw {!invalid_weights} refuses. The
+    in-language drivers raise it (through [support] and [dist.sample-lw-weights-v1]); [infer] and
+    model documents report it as an {!Invalid_draw} outcome. *)
+let refusal_diagnostic reason = diagnostic ~code:"E0917" (refusal_cause reason)
+
 let failure_diagnostics ~sampled = function
   | Impossible ->
       err ~code:"E0901" "the posterior is empty: every %s is impossible under the observations"
@@ -756,18 +886,23 @@ let failure_diagnostics ~sampled = function
         (if sampled then "run" else "path")
   | Numeric Non_finite -> err ~code:"E0917" "a path weight or the total mass is not finite"
   | Numeric Negative_mass -> err ~code:"E0917" "a path weight is negative"
+  | Invalid_draw reason -> Error [ refusal_diagnostic reason ]
 
 (** [enumerate_v1 ?max_branches ctx model] is exact enumeration with the typed outcome. A path with
     an exact zero factor is pruned (it counts as a terminal path and leaves nothing); a path whose
     product merely underflows survives, so underflow is distinguished from impossibility. With
     [max_branches], attempting a terminal path beyond the budget stops exploration: the outcome is
-    [Exhausted], never a partial posterior. Runtime failures are E0902 diagnostics. *)
+    [Exhausted], never a partial posterior. A sample site whose categorical weights
+    {!invalid_weights} refuses stops exploration there with [Invalid_draw], before any of its
+    branches, so no later factor can prune it. Runtime failures are E0902 diagnostics. *)
 let enumerate_v1 ?max_branches (ctx : Eval.ctx) (model : Eval.state) :
     (classified, Diag.t list) result =
   branch_counter := 0;
   (* a non-positive budget is exhausted before the model runs *)
   let exhausted = ref (match max_branches with Some budget -> budget <= 0 | None -> false) in
   let leaves : weighted list ref = ref [] in
+  (* the reason a sample site's weights were refused; exploration stops there *)
+  let refused : numeric option ref = ref None in
   let terminal () =
     match max_branches with
     | Some budget when !branch_counter >= budget ->
@@ -796,6 +931,10 @@ let enumerate_v1 ?max_branches (ctx : Eval.ctx) (model : Eval.state) :
         -> (
           match Result.bind (dist_of_value ctx dv) (support ctx) with
           | Error e -> Error e
+          | Ok entries when Option.is_some (invalid_weights entries) ->
+              (* refused at the draw, before any branch: no later factor can prune it *)
+              refused := invalid_weights entries;
+              Error (Runtime_err.Arithmetic "refused categorical draw")
           | Ok entries ->
               (* RT.2 §4: the support entries not yet explored are the pending frontier; each
                  leaves it as its branch starts *)
@@ -825,29 +964,38 @@ let enumerate_v1 ?max_branches (ctx : Eval.ctx) (model : Eval.state) :
             (Runtime_err.Type_error
                (Printf.sprintf "enumerate: unexpected op %s/%d" name (List.length args)))
   in
-  match explore model 1.0 with
-  | Error error -> Error [ runtime_diagnostic ~code:"E0902" error ]
-  | Ok () ->
-      let metadata =
-        {
-          exact = true;
-          complete = not !exhausted;
-          seed = None;
-          bound = max_branches;
-          explored = !branch_counter;
-        }
-      in
+  let metadata ~complete =
+    { exact = true; complete; seed = None; bound = max_branches; explored = !branch_counter }
+  in
+  let explored = explore model 1.0 in
+  match (explored, !refused) with
+  | Error _, Some reason ->
+      Ok { result = Error (Invalid_draw reason); metadata = metadata ~complete:false }
+  | Error error, None -> Error [ runtime_diagnostic ~code:"E0902" error ]
+  | Ok (), _ ->
       let result = if !exhausted then Error Exhausted else classify !leaves in
-      Ok { result; metadata }
+      Ok { result; metadata = metadata ~complete:(not !exhausted) }
 
-(** [lw_surviving_runs ctx ~seed ~samples model] runs [samples] seeded likelihood-weighting
-    executions exactly as {!likelihood_weighting} does (the same draws) and returns the runs that
-    are possible, oldest first, with their unnormalized weights. A run is impossible when an
-    observation has an exact zero factor or a categorical draw's support has zero total mass. *)
-let lw_surviving_runs (ctx : Eval.ctx) ~seed ~samples (model : unit -> Eval.state) :
-    ((Value.t * float) list, Diag.t list) result =
+(** The seeded likelihood-weighting runs behind {!lw_surviving_runs} and {!likelihood_weighting_v1}:
+    the possible runs, oldest first, with their unnormalized weights, or [Refused (reason, runs)]
+    when run number [runs] (counted from one) reached a draw {!invalid_weights} refuses while it was
+    still possible. *)
+type lw_runs = Surviving of (Value.t * float) list | Refused of numeric * int
+
+(** [lw_runs ctx ~seed ~samples model] runs [samples] seeded likelihood-weighting executions exactly
+    as {!likelihood_weighting} does (the same draws). A run is impossible when an observation has an
+    exact zero factor or a categorical draw's support has zero total mass; an impossible run is
+    dropped when it ends. A possible run that reaches a categorical {!invalid_weights} refuses stops
+    the driver there, as enumeration stops at the same site, whatever the rest of the run would
+    observe. A run that is already impossible draws from such a categorical over {!draw_total} and
+    carries on, since enumeration never reaches a site behind an exact zero factor; that is the
+    released driver's pick unless only the entry-order total overflows, where the ascending sum is
+    used. *)
+let lw_runs (ctx : Eval.ctx) ~seed ~samples (model : unit -> Eval.state) :
+    (lw_runs, Diag.t list) result =
   let master = Rng.make seed in
   let runs : weighted list ref = ref [] in
+  let refused : numeric option ref = ref None in
   let rec one_run rng (state : Eval.validated_state) (weight : float) (possible : bool) :
       (unit, Runtime_err.t) result =
     match run_until_op_validated ctx state with
@@ -860,20 +1008,25 @@ let lw_surviving_runs (ctx : Eval.ctx) ~seed ~samples (model : unit -> Eval.stat
         Ok ()
     | Ok (Validated_op { op; name = "sample"; args = [ dv ]; resume; _ })
       when is_dist_op ctx op "sample" -> (
-        match dist_of_value ctx dv with
+        let drawn =
+          Result.bind (dist_of_value ctx dv) (function
+            | Categorical entries -> (
+                match (check_weights entries, invalid_weights entries) with
+                | Ok (), _ -> Ok (draw rng entries, possible)
+                (* a categorical whose support has no mass is an impossible draw, not a value; the
+                   run resumes with the same draw as before and is dropped when it ends *)
+                | Error No_mass, _ -> Ok (draw rng entries, false)
+                | Error _, Some reason when possible ->
+                    refused := Some reason;
+                    Error (Runtime_err.Arithmetic "refused categorical draw")
+                | Error _, _ -> Ok (draw rng entries, false))
+            | d -> Result.map (fun x -> (x, possible)) (sample_dist ctx rng d))
+        in
+        match drawn with
         | Error e -> Error e
-        | Ok d -> (
-            (* a categorical whose support has no mass is an impossible draw, not a value *)
-            let empty =
-              match d with
-              | Categorical entries -> List.fold_left (fun acc (_, p) -> acc +. p) 0.0 entries = 0.0
-              | Bernoulli _ | UniformInt _ -> false
-            in
-            match sample_dist ctx rng d with
-            | Error e -> Error e
-            | Ok x ->
-                Result.bind (Eval.resume_validated_state ctx resume x) (fun state ->
-                    one_run rng state weight (possible && not empty))))
+        | Ok (x, possible) ->
+            Result.bind (Eval.resume_validated_state ctx resume x) (fun state ->
+                one_run rng state weight possible))
     | Ok (Validated_op { op; name = "observe"; args = [ dv; v ]; resume; _ })
       when is_dist_op ctx op "observe" -> (
         match Result.bind (dist_of_value ctx dv) (fun d -> pmf ctx d v) with
@@ -887,37 +1040,49 @@ let lw_surviving_runs (ctx : Eval.ctx) ~seed ~samples (model : unit -> Eval.stat
   in
   let initial = model () in
   let rec k_runs initial i =
-    if i >= samples then Ok ()
+    if i >= samples then Ok i
     else
       let rng = Rng.split master in
       let state = Eval.fresh_validated_state ctx initial in
-      match one_run rng state 1.0 true with Error e -> Error e | Ok () -> k_runs initial (i + 1)
+      match one_run rng state 1.0 true with
+      | Error e -> Error (e, i + 1)
+      | Ok () -> k_runs initial (i + 1)
   in
   match Eval.validate_state_once ctx initial with
   | Error error -> Error [ runtime_diagnostic ~code:"E0902" error ]
   | Ok initial -> (
-      match k_runs initial 0 with
-      | Error error -> Error [ runtime_diagnostic ~code:"E0902" error ]
-      | Ok () -> Ok (List.rev_map (fun { value; weight } -> (value, weight)) !runs))
+      let ran = k_runs initial 0 in
+      match (ran, !refused) with
+      | Error (_, run), Some reason -> Ok (Refused (reason, run))
+      | Error (error, _), None -> Error [ runtime_diagnostic ~code:"E0902" error ]
+      | Ok _, _ -> Ok (Surviving (List.rev_map (fun { value; weight } -> (value, weight)) !runs)))
+
+(** [lw_surviving_runs ctx ~seed ~samples model] is {!lw_runs}'s possible runs, oldest first, with
+    their unnormalized weights; a refused draw is its E0917 diagnostic. [dist.sample-lw-weights-v1]
+    returns the runs. *)
+let lw_surviving_runs (ctx : Eval.ctx) ~seed ~samples (model : unit -> Eval.state) :
+    ((Value.t * float) list, Diag.t list) result =
+  Result.bind (lw_runs ctx ~seed ~samples model) (function
+    | Surviving runs -> Ok runs
+    | Refused (reason, _) -> Error [ refusal_diagnostic reason ])
 
 (** [likelihood_weighting_v1] is seeded likelihood weighting with the typed outcome; for a
-    classifiable model its posterior equals {!likelihood_weighting}'s. *)
+    classifiable model its posterior equals {!likelihood_weighting}'s. A refused draw is an
+    [Invalid_draw] outcome whose metadata counts the runs executed up to it. *)
 let likelihood_weighting_v1 (ctx : Eval.ctx) ~seed ~samples (model : unit -> Eval.state) :
     (classified, Diag.t list) result =
+  let metadata explored =
+    { exact = false; complete = false; seed = Some seed; bound = Some samples; explored }
+  in
   Result.map
-    (fun runs ->
-      {
-        result = classify (List.rev_map (fun (value, weight) -> { value; weight }) runs);
-        metadata =
+    (function
+      | Surviving runs ->
           {
-            exact = false;
-            complete = false;
-            seed = Some seed;
-            bound = Some samples;
-            explored = samples;
-          };
-      })
-    (lw_surviving_runs ctx ~seed ~samples model)
+            result = classify (List.rev_map (fun (value, weight) -> { value; weight }) runs);
+            metadata = metadata samples;
+          }
+      | Refused (reason, run) -> { result = Error (Invalid_draw reason); metadata = metadata run })
+    (lw_runs ctx ~seed ~samples model)
 
 (* RT.1: drivers key, merge and compare values outside any evaluator run; a walk that runs out of
    fuel there ends the driver with E0919 *)

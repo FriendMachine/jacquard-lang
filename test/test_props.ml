@@ -267,10 +267,79 @@ let test_same_dist_with_stored_models () =
      in
      has "none)" r && not (has "false)" r))
 
+(* uniform-int(min-int, max-int): a choice index is an unsigned offset from lo, so the full range
+   (2^63 values) runs, replays, shrinks (lo first, then halving the distance), and prints its
+   offsets unsigned. "fails iff x >= 0" shrinks to x = 0, offset 2^62 (stored as a negative int). *)
+let wide_prop ?(bound = 0) lo hi =
+  Printf.sprintf
+    "(lam () (let nonrec (pvar x) (app (var sample) (app (var uniform-int) (lit %d) (lit %d))) \
+     (app (var check.true) (app (var lt) (var x) (lit %d)) (lit \"below\"))))"
+    lo hi bound
+
+let test_full_range_prop () =
+  let src = wide_prop min_int max_int in
+  let verdict, note = run_sampling ~seed:5 ~samples:20 src in
+  Alcotest.(check bool) "falsified" true (Warp.is_fail verdict);
+  Alcotest.(check string)
+    "shrunk to x = 0, printed unsigned"
+    "prop: falsified on case 4 of 20, seed 5; shrunk to 1 choice [4611686018427387904]" note;
+  let _, again = run_sampling ~seed:5 ~samples:20 src in
+  Alcotest.(check string) "seeded replay" note again;
+  let thunk = thunk_of src in
+  let rng = Infer_dist.Rng.make 1 in
+  let value_of forced =
+    match Warp.drive_prop ctx ~rng ~forced thunk with
+    | Ok run -> (
+        match run.Warp.pr_log with
+        | [ c ] -> (
+            match Warp.choice_value ctx c.Warp.c_dist c.Warp.c_index with
+            | Ok (Value.VInt x) -> Some x
+            | _ -> Alcotest.fail "not an int")
+        | _ -> Alcotest.fail "one choice")
+    | Error `Diverged -> None
+    | Error (`Runtime e) -> Alcotest.fail e
+  in
+  Alcotest.(check (option int)) "offset 0 is lo" (Some min_int) (value_of [ 0 ]);
+  Alcotest.(check (option int)) "offset 2^62 is 0" (Some 0) (value_of [ min_int ]);
+  Alcotest.(check (option int)) "offset 2^63 - 1 is hi" (Some max_int) (value_of [ -1 ]);
+  let thunk = thunk_of (wide_prop (-1) max_int) in
+  let fits forced =
+    match Warp.drive_prop ctx ~rng ~forced thunk with
+    | Ok _ -> true
+    | Error `Diverged -> false
+    | Error (`Runtime e) -> Alcotest.fail e
+  in
+  Alcotest.(check bool) "(-1, max-int): offset 2^62 is hi" true (fits [ min_int ]);
+  Alcotest.(check bool) "(-1, max-int): offset 2^62 + 1 diverges" false (fits [ min_int + 1 ]);
+  Alcotest.(check bool) "(-1, max-int): offset 2^63 - 1 diverges" false (fits [ -1 ]);
+  let thunk = thunk_of (wide_prop 0 5) in
+  let fits forced =
+    match Warp.drive_prop ctx ~rng ~forced thunk with
+    | Ok _ -> true
+    | Error `Diverged -> false
+    | Error (`Runtime e) -> Alcotest.fail e
+  in
+  Alcotest.(check (list bool))
+    "(0, 5): offsets 5, 6, -1" [ true; false; false ]
+    (List.map (fun i -> fits [ i ]) [ 5; 6; -1 ])
+
+(* a range of more than 2^16 values shrinks by the ladder whether or not its size fits in an Int:
+   "x < 1000" over (0, max-int - 1) shrinks to exactly x = 1000 *)
+let test_large_fitting_range_shrinks () =
+  let verdict, note = run_sampling ~seed:3 ~samples:20 (wide_prop ~bound:1000 0 (max_int - 1)) in
+  Alcotest.(check bool) "falsified" true (Warp.is_fail verdict);
+  Alcotest.(check bool)
+    ("shrunk to x = 1000: " ^ note) true
+    (String.ends_with ~suffix:"shrunk to 1 choice [1000]" note)
+
 let suite =
   [
     Alcotest.test_case "shrinks to the documented minimum" `Quick test_shrinks_to_documented_minimum;
     Alcotest.test_case "seeded determinism" `Quick test_seeded_determinism;
+    Alcotest.test_case "uniform-int(min-int, max-int) runs, replays and shrinks" `Quick
+      test_full_range_prop;
+    Alcotest.test_case "a fitting range above 2^16 values shrinks by the ladder" `Quick
+      test_large_fitting_range_shrinks;
     Alcotest.test_case "generator validity: the minimal case replays" `Quick
       test_generator_validity_theorem;
     Alcotest.test_case "exhaustive: closed-form case count" `Quick test_exhaustive_closed_form;

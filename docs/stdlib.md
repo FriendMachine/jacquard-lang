@@ -849,11 +849,17 @@ verified truth or consent.
 One more consumer leans on `Dist`'s constructors: Warp's shrinker (W6.4) orders
 each distribution's outcomes by SIMPLICITY, and shrinking lowers outcome indices.
 The ordering per constructor, pinned here because generators inherit it:
-`UniformInt` counts up from `lo` (index 0 = `lo`); `Categorical` uses entry order
+`UniformInt` counts up from `lo` (index 0 = `lo`; an index is the offset from `lo`
+read as an unsigned number, so `UniformInt(min-int, max-int)` offsets run to
+2^63 - 1, and a shrink report prints them unsigned); `Categorical` uses entry order
 (index 0 = the first entry, so put the simplest outcome first in generator
 tables); `Bernoulli` places `false` at index 0 — "toward false" is the shrink
 direction. Deleting a choice from the log replays the generator without it, which
 is how one `UniformInt` length choice makes whole-list shrinking fall out.
+Lowering an index steps it down by one, except for a `UniformInt` over more
+than 2^16 values: its lowerings try `lo` (offset 0) first and then halve the
+distance from `lo` (the offset less half, a quarter, and so on of itself),
+ending with the one-step lowering.
 
 ## 7. Ring 3: world, model, meta, and governance boundaries
 
@@ -1594,9 +1600,10 @@ returning `nil`, `jacquard infer enumerate` reports E0902 instead of E0901, and
 samplers refuse invalid weights, and enumeration and likelihood weighting
 refuse a draw from invalid weights with E0917 at the draw (see
 [Dist](#dist)), so `support` no longer returns such weights. No identity
-changes; the Warp cache tag moves from `warp-v3` to `warp-v5`, and the
-`jacquard dist-diff` posterior cache key from `dist-diff-v2` to `dist-diff-v3`,
-so neither serves a result computed before invalid draws were refused. Known
+changes; the Warp cache tag moves from `warp-v3` to `warp-v6` (with the fix
+for `UniformInt` ranges wider than Int), and the `jacquard dist-diff` posterior
+cache key from `dist-diff-v2` to `dist-diff-v3` (now `dist-diff-v4`), so
+neither serves a result computed before invalid draws were refused. Known
 limit: a likelihood-weighting run that is already impossible keeps executing
 (the native runtime cannot abandon a run midway). A zero-mass draw resumes it
 with the categorical's last entry, and a later draw from invalid weights
@@ -1628,6 +1635,19 @@ it requires a separate authority decision and evidence boundary.
 
 **Smaller narrowings.** `text.trim` strips ASCII whitespace only. `uniform-int`
 enumeration support caps at 10000 outcomes (pmf and sampling work on any range).
+Every non-empty range is valid, including ranges whose size exceeds the largest
+Int, such as `UniformInt(min-int, max-int)` with 2^63 values: a draw is always
+within the bounds, and `pmf` is one over the size n. A range of more than 2^32
+values is drawn exactly uniformly from 63 random bits per RNG output, rejecting
+bits that would bias the draw, so such a draw consumes one or more RNG outputs.
+A range of at most 2^32 values is drawn as in earlier releases, by scaling one
+uniform float (one of 2^53 equally likely values) by n, so its seeded draws
+are unchanged. Every value of such a range is reachable, and no value is more
+likely than another by more than a factor of (q + 1)/(q - 1), where
+q = floor(2^53/n) is at least 2^21: below 1 + 10^-6 for every such range and
+below 1 + 2e-15 for a die. When n is a power of two the draw is exactly
+uniform. `pmf` reports the ideal 1/n. The enumeration cap's error names the
+exact size.
 `emit.pipe` forces its callback to return unit (the doc's signature, enforced).
 Top-level definitions get closed rows, so passing one where an open row is needed takes an
 eta-expansion at the use site (`fn () -> agent()`) — see `infer.scripted`'s cram.

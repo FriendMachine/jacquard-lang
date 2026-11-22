@@ -31,7 +31,7 @@ let prelude_op ctx op name =
   | Some { Resolve.hash; _ } -> Hash.equal hash op
   | None -> false
 
-let version = "warp-v5"
+let version = "warp-v6"
 
 type verdict = Pass of int | Fail of { soft : string list; hard : string option } | NoChecks
 
@@ -321,14 +321,31 @@ let world_required (cctx : Check.ctx) (store : Store.t) : Hash.t list =
 (* One logged random choice: the distribution at the site plus the OUTCOME INDEX in
    shrink order — smaller index = simpler. Bernoulli maps 0=false/1=true (so "toward
    false" is index-lowering, like uniform-int toward lo and categorical toward earlier
-   entries); uniform-int index i is lo+i; categorical indexes its entry list. *)
+   entries); uniform-int index i is lo+i; categorical indexes its entry list.
+
+   A uniform-int index is the offset [value - lo], read as an UNSIGNED 63-bit number: a range may
+   hold up to 2^63 values (uniform-int(min-int, max-int)), so offsets of 2^62 and above are stored as
+   negative ints. Offsets are computed, compared, lowered and printed unsigned; lo + i (wrapping) is
+   exact. Bernoulli and categorical indices are small and nonnegative. *)
 type choice = { c_dist : Infer_dist.dist_v; c_index : int }
 
-let choice_arity (d : Infer_dist.dist_v) : int =
+(** [unsigned_lt a b]: [a < b] on ints read as unsigned 63-bit numbers. *)
+let unsigned_lt a b = a lxor min_int < b lxor min_int
+
+(** [index_fits d i]: [i] names an outcome of [d]. For uniform-int that is an unsigned offset at
+    most [hi - lo]; otherwise [0 <= i < arity]. A replayed index that does not fit diverges. *)
+let index_fits (d : Infer_dist.dist_v) (i : int) : bool =
   match d with
-  | Infer_dist.Bernoulli _ -> 2
-  | Infer_dist.UniformInt (lo, hi) -> hi - lo + 1
-  | Infer_dist.Categorical entries -> List.length entries
+  | Infer_dist.Bernoulli _ -> i >= 0 && i < 2
+  | Infer_dist.UniformInt (lo, hi) -> not (unsigned_lt (hi - lo) i)
+  | Infer_dist.Categorical entries -> i >= 0 && i < List.length entries
+
+(** [index_text c] renders a logged index for the shrink report: uniform-int offsets in unsigned
+    decimal. *)
+let index_text (c : choice) : string =
+  match c.c_dist with
+  | Infer_dist.UniformInt _ -> Infer_dist.unsigned_offset_text c.c_index
+  | Infer_dist.Bernoulli _ | Infer_dist.Categorical _ -> string_of_int c.c_index
 
 let choice_value ctx (d : Infer_dist.dist_v) (i : int) : (Value.t, Runtime_err.t) result =
   match d with
@@ -357,7 +374,9 @@ let fresh_index rng (d : Infer_dist.dist_v) : int =
   match d with
   | Infer_dist.Bernoulli p -> if Infer_dist.Rng.float rng < p then 1 else 0
   | Infer_dist.UniformInt (lo, hi) ->
-      int_of_float (Infer_dist.Rng.float rng *. float_of_int (hi - lo + 1))
+      (* the interpreter's draw, as an offset (wrapping, so offsets of 2^62 and above are negative
+         ints): the same element from the same stream *)
+      Infer_dist.uniform_draw rng lo hi - lo
   | Infer_dist.Categorical entries ->
       (* the interpreter draw's total, so a site [check_site_weights] accepts is drawn by its
          weights even when only its entry-order sum overflows *)
@@ -405,10 +424,9 @@ let drive_prop ctx ~rng ~(forced : int list) (thunk : Value.t) :
             with
             | Error cause -> Error (`Runtime cause)
             | Ok () -> (
-                let arity = choice_arity d in
                 let pick, rest =
                   match forced with
-                  | i :: rest -> ((if i < arity then Some i else None), rest)
+                  | i :: rest -> ((if index_fits d i then Some i else None), rest)
                   | [] -> (Some (fresh_index rng d), [])
                 in
                 match pick with
@@ -454,14 +472,22 @@ let simpler (a : choice list) (b : choice list) : bool =
   else
     let rec lex = function
       | [], [] -> false
-      | x :: xs, y :: ys -> if x.c_index <> y.c_index then x.c_index < y.c_index else lex (xs, ys)
+      | x :: xs, y :: ys ->
+          if x.c_index <> y.c_index then unsigned_lt x.c_index y.c_index else lex (xs, ys)
       | _ -> false
     in
     lex (a, b)
 
 (* Candidate edits in fixed priority: contiguous-span deletion (longest spans first —
    the list-length choice disappearing IS list shrinking), then one-step index
-   lowering. Every candidate replays through the generator itself. *)
+   lowering. Every candidate replays through the generator itself.
+
+   A uniform-int choice whose range has more than 2^16 values could take up to 2^63 one-step
+   lowerings (uniform-int(min-int, max-int)), so its lowerings are a ladder: offset 0 first, then
+   the offset minus half, a quarter, ... of itself, ending with the one-step lowering. Every other
+   choice keeps the single one-step lowering. *)
+let ladder_threshold = 1 lsl 16
+
 let shrink_candidates (log : choice list) : int list list =
   let idx = List.map (fun c -> c.c_index) log in
   let n = List.length idx in
@@ -476,12 +502,26 @@ let shrink_candidates (log : choice list) : int list list =
           (List.init n Fun.id))
       (List.init n (fun i -> n - i))
   in
+  let lowered_targets (c : choice) =
+    if c.c_index = 0 then []
+    else
+      match c.c_dist with
+      | Infer_dist.UniformInt (lo, hi) when Infer_dist.uniform_span_at_least lo hi ladder_threshold
+        ->
+          (* offsets are unsigned, so lsr halves them *)
+          let rec ladder k =
+            let step = c.c_index lsr k in
+            if step = 0 then [] else (c.c_index - step) :: ladder (k + 1)
+          in
+          ladder 0
+      | _ -> [ c.c_index - 1 ]
+  in
   let lowerings =
-    List.filter_map
+    List.concat_map
       (fun pos ->
-        if (List.nth log pos).c_index > 0 then
-          Some (List.mapi (fun i x -> if i = pos then x - 1 else x) idx)
-        else None)
+        List.map
+          (fun target -> List.mapi (fun i x -> if i = pos then target else x) idx)
+          (lowered_targets (List.nth log pos)))
       (List.init n Fun.id)
   in
   deletions @ lowerings
@@ -531,8 +571,7 @@ let run_prop_sampling ctx ~seed ~samples (thunk : Value.t) : (verdict * string, 
                   "prop: falsified on case %d of %d, seed %d; shrunk to %d choice%s [%s]" (i + 1)
                   samples seed (List.length minimal.pr_log)
                   (if List.length minimal.pr_log = 1 then "" else "s")
-                  (String.concat ";" (List.map (fun c -> string_of_int c.c_index) minimal.pr_log))
-              )
+                  (String.concat ";" (List.map index_text minimal.pr_log)) )
           end
           else cases (i + 1)
   in

@@ -652,6 +652,43 @@ static void check_dist(jq_value d) {
   jq_runtime_failf(JQ_ERROR_TYPE, "%s is not a distribution value", s);
 }
 
+/* uniform-int ranges: Infer_dist's uniform_fits / uniform_count /
+ * uniform_draw, operation for operation. Values are 63-bit, so hi - lo
+ * cannot overflow int64; a range fits when its size hi - lo + 1 is a 63-bit
+ * int (uniform-int(min-int, max-int) has 2^63 values and does not). */
+#define JQ_INT63_MAX INT64_C(4611686018427387903)
+/* Infer_dist.uniform_exact_threshold: ranges with more values are drawn
+ * from integer RNG bits */
+#define JQ_UNIFORM_EXACT_THRESHOLD (INT64_C(1) << 32)
+
+static bool uniform_fits(int64_t lo, int64_t hi) { return hi - lo < JQ_INT63_MAX; }
+
+static double uniform_count(int64_t lo, int64_t hi) {
+  if (uniform_fits(lo, hi)) return (double)(hi - lo + 1);
+  return (double)hi - (double)lo + 1.0;
+}
+
+/* Infer_dist.uniform_draw: a range of at most 2^32 values scales one
+ * jq_rng_float by its size n (the formula every release used: every value
+ * gets q - 1 to q + 1 of the 2^53 floats, q = floor(2^53 / n), so it is
+ * within a factor below 1 + 1e-6 of uniform); a larger one
+ * takes the top 63 bits of jq_rng_next, rejects bits at or above the largest
+ * multiple of the size that is at most 2^63 (Infer_dist.uniform_bits_offset),
+ * and so consumes one or more RNG outputs and is exactly uniform. The size is
+ * at most 2^63, so all of this is exact in uint64_t; lo + offset is in
+ * [lo, hi]. */
+static int64_t uniform_draw(int64_t *rng, int64_t lo, int64_t hi) {
+  if (hi - lo < JQ_UNIFORM_EXACT_THRESHOLD)
+    return lo + (int64_t)(jq_rng_float(rng) * (double)(hi - lo + 1));
+  const uint64_t two63 = UINT64_C(1) << 63;
+  uint64_t count = (uint64_t)hi - (uint64_t)lo + 1;
+  uint64_t limit = two63 - two63 % count;
+  for (;;) {
+    uint64_t r = (uint64_t)jq_rng_next(rng) >> 1;
+    if (r < limit) return (int64_t)((uint64_t)lo + r % count);
+  }
+}
+
 /* the support list, owned; the caller validated the dist. uniform-int is
  * budget-capped exactly like the interpreter. */
 static jq_value support_of(jq_rt *rt, jq_value d) {
@@ -669,10 +706,11 @@ static jq_value support_of(jq_rt *rt, jq_value d) {
   /* uniform-int */
   int64_t lo = jq_int_val(jq_con_fields(d)[0]);
   int64_t hi = jq_int_val(jq_con_fields(d)[1]);
+  if (!uniform_fits(lo, hi) || hi - lo >= 10000)
+    arith_err("uniform-int %lld..%lld has %llu outcomes; enumeration caps at 10000",
+              (long long)lo, (long long)hi,
+              (unsigned long long)((uint64_t)hi - (uint64_t)lo + 1));
   int64_t n = hi - lo + 1;
-  if (n > 10000)
-    arith_err("uniform-int %lld..%lld has %lld outcomes; enumeration caps at 10000",
-              (long long)lo, (long long)hi, (long long)n);
   double p = 1.0 / (double)n;
   jq_value list = rt->v_nil;
   for (int64_t i = n - 1; i >= 0; i--)
@@ -1160,8 +1198,9 @@ jq_value jq_i_pmf(jq_rt *rt, const jq_value *a) {
   if (is_con_named(d, "uniform-int")) {
     int64_t lo = jq_int_val(jq_con_fields(d)[0]);
     int64_t hi = jq_int_val(jq_con_fields(d)[1]);
-    double n = (double)(hi - lo + 1);
-    mass = (jq_is_int(v) && jq_int_val(v) >= lo && jq_int_val(v) <= hi) ? 1.0 / n : 0.0;
+    mass = (jq_is_int(v) && jq_int_val(v) >= lo && jq_int_val(v) <= hi)
+               ? 1.0 / uniform_count(lo, hi)
+               : 0.0;
   } else {
     jq_value entries = support_of(rt, d);
     char *vs = jq_show(v);
@@ -1184,8 +1223,9 @@ jq_value jq_i_pmf(jq_rt *rt, const jq_value *a) {
  *
  * Ported from Infer_dist.likelihood_weighting: a splitmix64 master seeded
  * by the argument; per run, one jq_rng_split child; per sample, one
- * jq_rng_float draw (inverse CDF over the unnormalized support; uniform-int
- * draws directly); observe multiplies the run's weight by the pmf and
+ * draw_dist (one jq_rng_float: inverse CDF over the unnormalized support;
+ * uniform-int draws directly, from jq_rng_next bits above 2^32 values);
+ * observe multiplies the run's weight by the pmf and
  * resumes unit. Runs are merged on jq_show keys, normalized by the grand
  * total, and sorted (probability descending, rendering ascending). The
  * model runs against an EMPTY handler stack (the interpreter drives a
@@ -1198,8 +1238,8 @@ static double pmf_mass(jq_rt *rt, jq_value d, jq_value v) {
   if (is_con_named(d, "uniform-int")) {
     int64_t lo = jq_int_val(jq_con_fields(d)[0]);
     int64_t hi = jq_int_val(jq_con_fields(d)[1]);
-    double n = (double)(hi - lo + 1);
-    return (jq_is_int(v) && jq_int_val(v) >= lo && jq_int_val(v) <= hi) ? 1.0 / n : 0.0;
+    return (jq_is_int(v) && jq_int_val(v) >= lo && jq_int_val(v) <= hi) ? 1.0 / uniform_count(lo, hi)
+                                                                         : 0.0;
   }
   jq_value entries = support_of(rt, d);
   char *vs = jq_show(v);
@@ -1248,13 +1288,14 @@ static double order_free_total(jq_value entries, double in_order) {
   return ascending_total(entries);
 }
 
-/* one draw from a validated dist: exactly one jq_rng_float */
+/* one draw from a validated dist: one jq_rng_float, except a uniform-int
+ * range above 2^32 values, which takes one or more jq_rng_next outputs
+ * (uniform_draw) */
 static jq_value draw_dist(jq_rt *rt, int64_t *rng, jq_value d) {
   if (is_con_named(d, "uniform-int")) {
     int64_t lo = jq_int_val(jq_con_fields(d)[0]);
     int64_t hi = jq_int_val(jq_con_fields(d)[1]);
-    int64_t n = hi - lo + 1;
-    return jq_int(lo + (int64_t)(jq_rng_float(rng) * (double)n));
+    return jq_int(uniform_draw(rng, lo, hi));
   }
   jq_value entries = support_of(rt, d);
   double total = 0.0;

@@ -190,7 +190,9 @@ grants `dist`: a root grant never answers them, so every draw is logged and
 replayable. On
 failure, the shrinker edits the log toward canonical simplicity (delete spans,
 move `UniformInt` choices toward the low bound, prefer earlier `Categorical`
-entries, prefer `False`) and replays the generator with logged choices forced,
+entries, prefer `False`; a `UniformInt` choice over more than 2^16 values tries
+the low bound first and then halves its distance from it, instead of stepping
+down one value at a time) and replays the generator with logged choices forced,
 sampling fresh only past the log's end. Every candidate the shrinker produces is
 a value the generator could emit — candidates that break positional alignment
 across sample sites are detected as divergence during replay and skipped, never
@@ -348,9 +350,18 @@ their weights advance it to `warp-v5`: both lanes now refuse a generator with
 invalid weights or zero total mass that an earlier driver passed (vacuously
 or by drawing an unweighted entry), so those cached passes must not be served.
 (`warp-v4` was used only by unreleased builds of that change, which could
-cache such a false pass, so it is skipped.) Existing `warp-v1` to `warp-v4`
-files remain harmless in the result store but cannot satisfy a `warp-v5`
-lookup.
+cache such a false pass, so it is skipped.) Drawing `UniformInt` ranges whose
+size exceeds the largest Int correctly advances it to `warp-v6`: an earlier
+driver drew every value of `UniformInt(min-int, max-int)` from one end (and
+values outside other such ranges), so a pass cached from it could be vacuous.
+The same bump covers two other changes to sampled `UniformInt` choices: a
+range of more than 2^32 values is now drawn exactly uniformly from integer RNG
+bits (an earlier driver scaled one float, which in a range of more than 2^52
+and fewer than 2^53 values makes some values at least twice as likely as
+others or leaves them unreachable), and a choice over more than 2^16 values
+shrinks by trying `lo` first and then halving its distance from `lo`.
+Existing `warp-v1` to `warp-v5` files remain harmless in the result store but
+cannot satisfy a `warp-v6` lookup.
 
 Coverage gets the same semantic treatment: the interpreter records which
 definition hashes were evaluated under test, and `jacquard test --coverage` reports

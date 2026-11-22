@@ -9,7 +9,8 @@
   §3.3a). Slice 3a implements history, snapshots of assumptions, inputs and the
   policy, and `jacquard model explain` (`src/model_history.ml`, W1802; §3.5a).
   Slice 3b retains each entry's and term argument's reachable declarations and
-  names the callees that changed (§3.5a). §7 lists what each slice proves.
+  names the callees that changed (§3.5a). Histories at their size limit are
+  rotated (W1804; §3.5a). §7 lists what each slice proves.
 - Task: MODEL.1. Consumers: EXP.5 (`scenario-v1` is a MODEL.1 artifact plus
   forks), UNC.3 (assumption sets), the host's decision documents (APP.3), and
   MODEL.2 (measured incremental computation).
@@ -365,12 +366,9 @@ guessed. Host 13 consumes `--json` of both commands.
   is not its own dependency record's, or whose bindings do not match its
   arguments, or whose input snapshot is not the input's identity, is
   malformed. A history with a malformed or torn frame keeps every record before
-  it and is rewritten atomically (W1803); one that cannot be read at all, that
-  is larger than 64 MiB, or that holds a record of another format version, is
-  left untouched (W1802), as is any failed write. Histories are never
-  compacted: W1802 for one larger than 64 MiB says to move the file aside,
-  which starts a new history for that result (the moved file keeps every
-  earlier record), and W1802 for another format names the format it found
+  it and is rewritten atomically (W1803); one that cannot be read at all, or
+  that holds a record of another format version, is left untouched (W1802), as
+  is any failed write. W1802 for another format names the format it found
   (`format=N`) and says to evaluate with the Jacquard version that wrote it or
   to move the file aside; `explain` says the same. A history, lock or snapshot
   path that is a symbolic link is refused, never followed; a missing history or
@@ -381,6 +379,36 @@ guessed. Host 13 consumes `--json` of both commands.
   a directory of its own); `explain` reads no history through such a
   history directory (the history is unavailable) and no snapshot through such
   a `snapshots` directory (the snapshot counts as gone), and creates nothing.
+- Histories are rotated, never compacted or rewritten in place to drop
+  records. When a record is to be written and the history with it would exceed
+  64 MiB, or the history is already larger than 64 MiB and cannot be read, the
+  evaluation (under the same lock) moves the whole history to
+  `history/<document>/<result>.N`, N being one more than the largest N of any
+  entry of that name there, whatever its kind (the first rotation is `.1`;
+  higher numbers are newer, and nothing is overwritten). Result names have no
+  `.`, so these names never collide with another result's history. The move is
+  a hard link, which neither follows the history nor replaces an existing
+  entry; any failure to make it is W1802, whose next step says to move the
+  history aside by hand, and leaves the history as it was. The history is then
+  replaced atomically by a new one: the records `explain` reports from (the
+  last record before the latest key's run, that run's first record, and the
+  latest record, byte for byte, each `previous` unchanged) and then the new
+  record, so `explain` reports the same before and after a rotation (its check
+  that each record's policy snapshot is its policy covers the records the new
+  history holds). If those records and the new one would exceed 64 MiB, the
+  new history keeps only the records `explain` reports from once the new
+  record is appended, or, failing that, none. A history too large to read is
+  not seeded: the new record's `previous` is `none`. A damaged history is moved
+  aside whole and the new one seeded from the records before the damage. The
+  evaluation reports W1804, naming the file that keeps the old records. At
+  every instant the history holds either the old or the new records, and after
+  the link the old bytes are also at `<result>.N`: an evaluation stopped
+  between the two leaves `<result>.N` and the history as one regular file, and
+  the next evaluation that writes a record finds that the newest `<result>.N`
+  is the history itself and completes the rotation into it, whatever the
+  history's size, rather than linking a second copy or extending the shared
+  file. An evaluation that writes no record never rotates. Rotated files are
+  never read by `model eval` or `explain` and may be deleted.
 - `snapshots/<hex>` holds each assumption's source text, each inline literal,
   each input's bytes and the canonical policy, named by their HASH_V0, written
   atomically when absent or when the file no longer holds its content, on every
@@ -397,8 +425,9 @@ guessed. Host 13 consumes `--json` of both commands.
   every differing component and, when any, a `snapshots gone:` line, or
   `history unavailable (REASON)`. `explain` never writes; the reason says what
   to do: a damaged history is repaired by the next `model eval` (which keeps
-  every record before the damage), and one larger than 64 MiB can be moved
-  aside. Policies are compared by their identity in the
+  every record before the damage), and one larger than 64 MiB is moved aside
+  by the next `model eval` that records the result, to the `<result>.N` the
+  reason names. Policies are compared by their identity in the
   dependency record; a policy snapshot that is present but is not that policy
   makes the history unavailable.
   When a result has an earlier record under another key, `last change (T):`
@@ -494,7 +523,8 @@ guessed. Host 13 consumes `--json` of both commands.
 | a cache file is a symbolic link | never followed: an outcome is ignored with W1800, a history or snapshot is refused |
 | a cache directory below the cache root is a symbolic link | never read through: no outcome is served from or stored in it (W1801), no history record is written (W1802), and `explain` reads no history or snapshot through it |
 | the executable's file is replaced while it runs | the build identity is that of the running image, so outcomes are filed under the build that computed them |
-| a history grows beyond 64 MiB | never compacted; W1802 says to move it aside to start a new one |
+| a history would grow beyond 64 MiB, or already has | rotated: moved whole to `<result>.N` beside it and a new history started (W1804); a history that could be read seeds the new one with the records `explain` reports from (fewer only when they would not fit), so `explain` output is unchanged; one too large to read is not seeded |
+| an evaluation stops while rotating a history | the history holds the old or the new records; the next evaluation that writes a record completes the rotation into the same `<result>.N` |
 
 ## 4. Compatibility
 

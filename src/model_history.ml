@@ -202,6 +202,55 @@ let other_format bytes =
   in
   scan 0
 
+(* --- rotation --- *)
+
+(* the N of every directory entry [NAME.N] beside a history, whatever its kind: N is a positive
+   decimal without leading zeros that fits an int *)
+let rotated_numbers dir name =
+  let prefix = name ^ "." in
+  Array.to_list (Sys.readdir dir)
+  |> List.filter_map (fun entry ->
+      if String.starts_with ~prefix entry then
+        let n =
+          String.sub entry (String.length prefix) (String.length entry - String.length prefix)
+        in
+        if n <> "" && n.[0] <> '0' then natural n else None
+      else None)
+
+type rotation_target = Link of string | Reuse of string
+
+(* where a history at [path] is moved: [NAME.N], N one more than the largest existing N (so
+   nothing is ever overwritten, and higher numbers are newer), or, when the newest [NAME.N] is
+   already the very file at [path] (an evaluation stopped between moving the history and starting
+   the new one), that file again. Only lstat is used, so no entry is followed. *)
+let rotation_target path =
+  let dir = Filename.dirname path and name = Filename.basename path in
+  match List.fold_left max 0 (rotated_numbers dir name) with
+  | 0 -> Link (path ^ ".1")
+  | top -> (
+      let newest = Printf.sprintf "%s.%d" path top in
+      match (Unix.lstat newest, Unix.lstat path) with
+      | ( { Unix.st_kind = Unix.S_REG; st_dev = d; st_ino = i; _ },
+          { Unix.st_kind = Unix.S_REG; st_dev; st_ino; _ } )
+        when d = st_dev && i = st_ino ->
+          Reuse newest
+      | _ | (exception Unix.Unix_error _) ->
+          if top = max_int then raise (Unix.Unix_error (Unix.EOVERFLOW, "rotate", newest))
+          else Link (Printf.sprintf "%s.%d" path (top + 1)))
+
+(* a rotation that was started (the newest [NAME.N] is the history itself) and not finished *)
+let rotation_pending path =
+  match rotation_target path with
+  | Reuse _ -> true
+  | Link _ -> false
+  | exception (Unix.Unix_error _ | Sys_error _) -> false
+
+(* the name [rotation_target] would give, for a reason; read-only *)
+let next_rotation path =
+  match rotation_target path with
+  | Link t | Reuse t -> Filename.basename t
+  | exception (Unix.Unix_error _ | Sys_error _) -> Filename.basename path ^ ".N"
+
 (* explain never writes: each reason says what the user, or the next evaluation, can do; a history
    is never read through a directory that is not a directory of its own *)
 let read_history ~cache ~document name =
@@ -211,7 +260,10 @@ let read_history ~cache ~document name =
     | Error (`Too_large limit) ->
         Error
           (Printf.sprintf
-             "larger than %d bytes; move it aside to start a new history for this result" limit)
+             "larger than %d bytes; the next model eval that records this result moves it to %s \
+              and starts a new history"
+             limit
+             (next_rotation (history_path ~cache ~document name)))
     | Error (`Unreadable reason) -> Error reason
     | Ok bytes -> (
         match parse_history bytes with
@@ -500,33 +552,125 @@ let oversized ~(store : Store.t) text =
         lines
       |> List.sort_uniq compare
 
-let append ~cache ~document (prepared : Model_doc.prepared) (r : Model_doc.resolved) ~outcome =
+(* what [explain] reads of a history: the last record before the latest key's run, the run's first
+   record, and the latest record *)
+let explained records =
+  match List.rev records with
+  | [] -> None
+  | latest :: earlier ->
+      let rec split run = function
+        | rc :: rest when Hash.equal rc.key latest.key -> split (rc :: run) rest
+        | rest -> (run, rest)
+      in
+      let run, before = split [ latest ] earlier in
+      Some (List.nth_opt before 0, List.hd run, latest)
+
+(* records in their order, each once *)
+let distinct ~before ~first ~latest =
+  Option.to_list before @ [ first ] @ if latest == first then [] else [ latest ]
+
+let frame bytes = Printf.sprintf "entry bytes=%d\n%s\n" (String.length bytes) bytes
+let frames records = String.concat "" (List.map (fun r -> frame (serialize_record r)) records)
+
+(* the seed of a new history whose first new record is [next]: the records [explain] reads now;
+   when those and [next] exceed [limit], the fewer records it reads once [next] is appended (the
+   latest record, for a new key; the record before the run and the run's first record, for a
+   refresh under the same key); when even those exceed it, none. Either way [explain] reports
+   the same after the append as it would have without the rotation, except with no seed. *)
+let seed ~limit records (next : record) =
+  let fits rs =
+    String.length (frames rs) + String.length (frame (serialize_record next)) <= limit
+  in
+  match explained records with
+  | None -> []
+  | Some (before, first, latest) ->
+      let now = distinct ~before ~first ~latest in
+      let after =
+        if Hash.equal latest.key next.key then distinct ~before ~first ~latest:first else [ latest ]
+      in
+      if fits now then now else if fits after then after else []
+
+type rotation_cause = Oversized | Full | Interrupted
+
+let keep_step =
+  "Move that history file aside to start a new history for this result; the moved file keeps every \
+   earlier record, and the result itself is unaffected."
+
+(* move the history at [path] aside and start a new one with [next] (see [append]) *)
+let rotate ~limit ~path ~history ~damage ~cause (next : record) =
+  let seeded = seed ~limit history next in
+  let bytes = frames seeded ^ frame (serialize_record next) in
+  let started target =
+    let* () = plain (Model_eval.write_atomic path bytes) in
+    let why =
+      match cause with
+      | Oversized -> Printf.sprintf "the history was larger than %d bytes" limit
+      | Full -> Printf.sprintf "the history reached its size limit (%d bytes)" limit
+      | Interrupted ->
+          "the history was also its newest numbered file, as an evaluation that stopped while \
+           moving it aside leaves it"
+    in
+    let damaged =
+      match damage with
+      | Some (_, reason) -> Printf.sprintf ", and the history was damaged (%s)" reason
+      | None -> ""
+    in
+    let kept =
+      match seeded with
+      | [] -> "a new history was started"
+      | rs ->
+          Printf.sprintf "the new history starts with the %d record(s) model explain reports from"
+            (List.length rs)
+    in
+    Ok
+      (Some
+         (Model_eval.Rotated
+            (Printf.sprintf "%s%s; every earlier record is kept in %s, and %s" why damaged target
+               kept)))
+  in
+  match rotation_target path with
+  | exception ((Unix.Unix_error _ | Sys_error _) as e) ->
+      Error
+        {
+          Model_eval.reason =
+            Printf.sprintf "the history %s could not be moved aside (%s), so it is not extended"
+              path (Printexc.to_string e);
+          next_step = Some keep_step;
+        }
+  | Reuse target -> started target
+  | Link target -> (
+      (* [link] never follows [path] or replaces [target]; a failure leaves [path] as it was *)
+      match Unix.link ~follow:false path target with
+      | () -> started target
+      | exception Unix.Unix_error (e, _, _) ->
+          Error
+            {
+              Model_eval.reason =
+                Printf.sprintf "the history %s could not be moved to %s (%s), so it is not extended"
+                  path target (Unix.error_message e);
+              next_step = Some keep_step;
+            })
+
+let append ?(limit = history_limit) ~cache ~document (prepared : Model_doc.prepared)
+    (r : Model_doc.resolved) ~outcome =
   let name = r.Model_doc.decl.Model_doc.r_name in
   let path = history_path ~cache ~document name in
   let* () = Model_eval.private_dirs ~root:cache [ "history"; hex document ] in
   let* () = Model_eval.private_dirs ~root:cache [ "snapshots" ] in
   with_lock path @@ fun () ->
   let key = Model_doc.key r.Model_doc.dependency in
-  (* a damaged history keeps every record before the damage; an unreadable one, one too large to
-     read, and one holding another format are left alone *)
-  let* history, damage =
-    match Model_eval.read_private ~limit:history_limit path with
-    | Error `Absent -> Ok ([], None)
-    | Error (`Too_large limit) ->
-        Error
-          {
-            Model_eval.reason =
-              Printf.sprintf "the history %s is larger than %d bytes, so it is not extended" path
-                limit;
-            next_step =
-              Some
-                "Move that history file aside to start a new history for this result; the moved \
-                 file keeps every earlier record, and the result itself is unaffected.";
-          }
+  (* a damaged history keeps every record before the damage; one too large to read is rotated
+     when a record is written; an unreadable one, and one holding another format, are left
+     alone. [size] is the history's length, [None] when it is too large to read *)
+  let* history, damage, size =
+    match Model_eval.read_private ~limit path with
+    | Error `Absent -> Ok ([], None, Some 0)
+    | Error (`Too_large _) -> Ok ([], None, None)
     | Error (`Unreadable reason) -> Error (failure reason)
     | Ok bytes -> (
+        let size = Some (String.length bytes) in
         match (parse_prefix bytes, lazy (other_format bytes)) with
-        | (records, None), _ -> Ok (records, None)
+        | (records, None), _ -> Ok (records, None, size)
         | (_, Some _), (lazy (Some v)) ->
             Error
               {
@@ -541,7 +685,7 @@ let append ~cache ~document (prepared : Model_doc.prepared) (r : Model_doc.resol
                      aside to start a new one; the result itself is unaffected.";
               }
         | (records, Some (offset, reason)), _ ->
-            Ok (records, Some (String.sub bytes 0 offset, reason)))
+            Ok (records, Some (String.sub bytes 0 offset, reason), size))
   in
   (* snapshots are written, or repaired, on every evaluation, so pruning them never sticks *)
   let* bindings =
@@ -586,12 +730,12 @@ let append ~cache ~document (prepared : Model_doc.prepared) (r : Model_doc.resol
   let note =
     Option.map
       (fun (_, reason) ->
-        Printf.sprintf "the history was damaged (%s); its %d earlier record(s) were kept" reason
-          (List.length history))
+        Model_eval.Repaired
+          (Printf.sprintf "the history was damaged (%s); its %d earlier record(s) were kept" reason
+             (List.length history)))
       damage
   in
   let latest = match List.rev history with r :: _ -> Some r | [] -> None in
-  let frame bytes = Printf.sprintf "entry bytes=%d\n%s\n" (String.length bytes) bytes in
   (* the latest record still names a snapshot that is gone (an equal respelling of an
      assumption keeps the key but changes its text): refresh it with a record naming the
      current snapshots *)
@@ -652,10 +796,26 @@ let append ~cache ~document (prepared : Model_doc.prepared) (r : Model_doc.resol
         }
       in
       let bytes = serialize_record record in
-      match damage with
-      | Some (kept, _) ->
-          Result.map (fun () -> note) (plain (Model_eval.write_atomic path (kept ^ frame bytes)))
-      | None -> Result.map (fun () -> None) (plain (append_frame path bytes)))
+      (* what the history would hold before the new record, written in place *)
+      let base = match damage with Some (kept, _) -> Some (String.length kept) | None -> size in
+      let too_large =
+        match base with Some n -> n + String.length (frame bytes) > limit | None -> true
+      in
+      (* a history at its limit, or one a stopped evaluation already moved, is moved to a numbered
+         file beside it (a hard link, so the old bytes are never copied or rewritten), then
+         replaced atomically by a new history: the records explain reads, then the new one. At
+         every instant the history holds the old or the new records, and the old bytes stay at the
+         numbered file *)
+      if too_large || rotation_pending path then
+        let cause =
+          match size with None -> Oversized | Some _ when too_large -> Full | _ -> Interrupted
+        in
+        rotate ~limit ~path ~history ~damage ~cause record
+      else
+        match damage with
+        | Some (kept, _) ->
+            Result.map (fun () -> note) (plain (Model_eval.write_atomic path (kept ^ frame bytes)))
+        | None -> Result.map (fun () -> None) (plain (append_frame path bytes)))
 
 (* --- explanations --- *)
 

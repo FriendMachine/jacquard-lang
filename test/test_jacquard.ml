@@ -107,6 +107,7 @@ let () =
       ("exploration-log", Test_exploration_log.suite);
       ("model-doc", Test_model_doc.suite);
       ("model-eval", Test_model_eval.suite);
+      ("model-history", Test_model_history.suite);
       ("surface-lex", Test_surface_lex.suite);
       ("surface-parse", Test_surface_parse.suite);
       ("surface-patterns", Test_surface_patterns.suite);

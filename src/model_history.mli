@@ -45,12 +45,13 @@ val parse_history : string -> (record list, string) result
     match its arguments, refuses the file. *)
 
 val append :
+  ?limit:int ->
   cache:string ->
   document:Hash.t ->
   Model_doc.prepared ->
   Model_doc.resolved ->
   outcome:string ->
-  (string option, Model_eval.history_failure) result
+  (Model_eval.history_note option, Model_eval.history_failure) result
 (** [append ~cache ~document prepared resolved ~outcome] writes the result's snapshots (owner-only,
     atomically): each assumption's text, inline literal and input, the policy, and the closure
     manifest and declaration bodies of the entry and of each term argument. A snapshot is written
@@ -65,12 +66,32 @@ val append :
     and a [history], [history/DOC] or [snapshots] directory that is not a directory of its own
     refuses the record.
 
-    [Ok None] is success; [Ok (Some note)] means a history with a damaged frame kept every record
-    before it and was rewritten atomically, and the note says so. [Error failure] leaves the history
-    untouched: it cannot be read at all, is larger than 64 MiB (the failure's next step says to move
-    it aside, since histories are never compacted), holds a record of another format (the reason
-    names that format as [format=N], and the next step says to evaluate with the Jacquard version
-    that wrote it or to move the file aside), or a write failed. *)
+    Rotation: when a record is to be written and the history with it would exceed [limit] bytes (64
+    MiB; [?limit] exists for tests), or the history is larger than [limit] and so cannot be read,
+    the history is moved aside to [NAME.N] beside it, N being one more than the largest N of any
+    directory entry named [NAME.N] (of whatever kind; N is a positive decimal without leading
+    zeros), so nothing is overwritten and higher numbers are newer. The move is a hard link that
+    never follows [NAME] or replaces [NAME.N]; the history is then replaced atomically by a new one
+    holding the records {!explain} reports from (the record before the latest key's run, that run's
+    first record and the latest record, byte for byte), then the new record, so [explain] reports
+    the same before and after the rotation (its check that each record's policy snapshot is its
+    policy then covers only the records the new history holds). When those records and the new one
+    would exceed [limit], the new history holds only the records [explain] reports from once the new
+    record is appended, or, when those too would exceed it, only the new record; a history too large
+    to read starts with only the new record, whose [previous] is [None]. A damaged history is moved
+    aside whole, and the new history is seeded from the records before the damage. If an evaluation
+    stopped after the link and before the new history was written, the newest [NAME.N] is the
+    history itself (the same regular file); the next call that writes a record completes that
+    rotation, reusing [NAME.N], whatever the history's size. A call that writes no record never
+    rotates. Rotated files are never read by [append] or {!explain}.
+
+    [Ok None] is success. [Ok (Some (Repaired note))] means a history with a damaged frame kept
+    every record before it and was rewritten atomically; [Ok (Some (Rotated note))] means the
+    history was moved aside as above, and the note names the file that keeps it. [Error failure]
+    leaves the history untouched: it cannot be read at all, holds a record of another format (the
+    reason names that format as [format=N], and the next step says to evaluate with the Jacquard
+    version that wrote it or to move the file aside), it could not be moved aside (the next step
+    says to move it aside by hand), or a write failed. *)
 
 val open_regular :
   ?before_create:(unit -> unit) -> string -> Unix.open_flag list -> (Unix.file_descr, string) result
@@ -153,10 +174,11 @@ val explain : cache:string -> document:Hash.t -> Model_doc.prepared -> explanati
     predecessor. An assumption or input renders from its snapshots; a missing snapshot renders as
     ["(unavailable)"]. It never writes or creates anything: a history that cannot be used is
     [Unavailable], with a reason that says what to do (a damaged one is repaired by the next
-    [model eval]; one larger than 64 MiB, or one holding a record of another format, named as
-    [format=N], can be moved aside). A history is never read through a [history] or [history/DOC]
-    directory that is a symbolic link (the result is [Unavailable]), nor a snapshot through such a
-    [snapshots] directory (the snapshot counts as gone). *)
+    [model eval]; one larger than 64 MiB is moved aside by the next [model eval] that records the
+    result, and the reason names the [NAME.N] it would use; one holding a record of another format,
+    named as [format=N], can be moved aside). A history is never read through a [history] or
+    [history/DOC] directory that is a symbolic link (the result is [Unavailable]), nor a snapshot
+    through such a [snapshots] directory (the snapshot counts as gone). *)
 
 val render_text : explanation -> string list
 (** [render_text e] is the human rendering: a [RESULT: FRESHNESS] line, the stale changes (each

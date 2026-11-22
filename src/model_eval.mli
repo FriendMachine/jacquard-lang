@@ -50,8 +50,15 @@ type history_failure = {
   next_step : string option;  (** what the user can do, when it is not the default advice *)
 }
 
+(** What a history write that succeeded reports. *)
+type history_note =
+  | Repaired of string  (** a damaged history kept every record before the damage (W1803) *)
+  | Rotated of string
+      (** a history at its size limit was moved to a numbered file beside it and a new one started
+          (W1804) *)
+
 val evaluate :
-  ?record:(Model_doc.resolved -> outcome:string -> (string option, history_failure) result) ->
+  ?record:(Model_doc.resolved -> outcome:string -> (history_note option, history_failure) result) ->
   ?build:string ->
   ctx:Eval.ctx ->
   allows:string list ->
@@ -82,7 +89,7 @@ val evaluate :
     the cache's [outcomes] directories are made owner-only when they are ours and are not. [record]
     is called for every result that has an outcome when [cache] is present and [allows] is empty,
     with its status and outcome tag; its failure is W1802 (with the failure's next step when it
-    names one), and a note it returns is W1803. *)
+    names one), and a note it returns is W1803 ([Repaired]) or W1804 ([Rotated]). *)
 
 val read_private :
   limit:int -> string -> (string, [ `Absent | `Too_large of int | `Unreadable of string ]) result

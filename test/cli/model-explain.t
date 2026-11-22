@@ -196,28 +196,32 @@ earlier records.
       callee con Tri added
   $ cd ..
 
-A history larger than 64 MiB is never read: evaluation leaves it untouched
-with W1802, whose next step says to move it aside, and explain says the same.
-A damaged history is unavailable to explain until the next evaluation repairs
-it.
+A history larger than 64 MiB is never read, and explain says the next
+evaluation moves it aside. That evaluation moves it, whole, to `r.1` beside it
+(W1804) and starts a new history with its record. A damaged history is
+unavailable to explain until the next evaluation repairs it.
 
   $ mkdir large && cd large
   $ printf 'f(x) = add(x, 1)\n' > m.jac
   $ printf 'jacquard-model format=1\nsource m.jac\nresult r entry f args 1 driver run fuel=10000\n' > doc.model
   $ jacquard model eval doc.model > /dev/null
   $ h=$(ls .jacquard/model-cache/history/*/r); truncate -s 70M "$h"
+  $ jacquard model explain doc.model
+  r: history unavailable (larger than 67108864 bytes; the next model eval that records this result moves it to r.1 and starts a new history)
   $ sed -i 's/add(x, 1)/add(x, 2)/' m.jac
   $ jacquard model eval doc.model > big.out 2>&1; echo "exit=$?"; sed -E 's#[^ ]*/history/[0-9a-f]+/r#HISTORY#' big.out
   exit=0
-  warning[W1802]: A model result's history could not be written.
-    Cause: result r: the history HISTORY is larger than 67108864 bytes, so it is not extended
-    Next step: Move that history file aside to start a new history for this result; the moved file keeps every earlier record, and the result itself is unaffected.
+  warning[W1804]: A model result's history was moved aside and a new one started.
+    Cause: result r: the history was larger than 67108864 bytes; every earlier record is kept in HISTORY.1, and a new history was started
+    Next step: Nothing is needed: the moved file keeps every earlier record; model eval and explain never read it, and it may be deleted.
   r: fresh
     value 3
-  $ jacquard model explain doc.model
-  r: history unavailable (larger than 67108864 bytes; move it aside to start a new history for this result)
-  $ h=$(ls .jacquard/model-cache/history/*/r); mv "$h" r.old; jacquard model eval doc.model > /dev/null; grep -c '^entry bytes=' "$h"
+  $ stat -c %s "$h.1"; grep -c '^entry bytes=' "$h"; grep '^previous ' "$h"
+  73400320
   1
+  previous none
+  $ jacquard model explain doc.model > rotated.out; sed -E 's/[0-9]{4}-[0-9-]+T[0-9:]+Z/TIME/' rotated.out
+  r: current (evaluated TIME)
   $ echo junk >> "$h"
   $ jacquard model explain doc.model
   r: history unavailable (bad frame; the next model eval keeps every record before the damage)

@@ -174,6 +174,10 @@ let warning ?next_step ~code cause =
     | "W1803" ->
         ( "A damaged model history was repaired.",
           "Nothing is needed: the records before the damage were kept." )
+    | "W1804" ->
+        ( "A model result's history was moved aside and a new one started.",
+          "Nothing is needed: the moved file keeps every earlier record; model eval and explain \
+           never read it, and it may be deleted." )
     | "W1802" ->
         ( "A model result's history could not be written.",
           "Check that the cache directory is writable; the result itself is unaffected." )
@@ -339,6 +343,7 @@ let rec make_dirs dir =
     try Unix.mkdir dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
 
 type history_failure = { reason : string; next_step : string option }
+type history_note = Repaired of string | Rotated of string
 
 (* directories under a cache root that this process has made private *)
 let private_done : (string, unit) Hashtbl.t = Hashtbl.create 8
@@ -621,7 +626,10 @@ let evaluate ?(record = fun _ ~outcome:_ -> Ok None) ?build ~ctx ~allows ~seed ~
         | Some outcome, [], Some _ -> (
             match record r ~outcome:(status_tag e.status ^ " " ^ outcome_tag outcome) with
             | Ok None -> ()
-            | Ok (Some note) -> warn ~code:"W1803" (Printf.sprintf "result %s: %s" e.name note)
+            | Ok (Some (Repaired note)) ->
+                warn ~code:"W1803" (Printf.sprintf "result %s: %s" e.name note)
+            | Ok (Some (Rotated note)) ->
+                warn ~code:"W1804" (Printf.sprintf "result %s: %s" e.name note)
             | Error { reason; next_step } ->
                 warn ?next_step ~code:"W1802" (Printf.sprintf "result %s: %s" e.name reason))
         | _ -> ());

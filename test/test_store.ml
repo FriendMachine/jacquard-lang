@@ -429,6 +429,108 @@ let test_origin_roundtrip () =
   let t3 = open_ok root in
   Alcotest.(check (option string)) "empty sidecar ignored" None (Store.origin t3 hs.Canon.decl_hash)
 
+(* PERF.1: a batch coalesces names.jqd writes into one at its end, never loses one *)
+let test_batch_names_writes_once_at_end () =
+  let root = fresh_root () in
+  let t = open_ok root in
+  let names_file = Filename.concat root "names.jqd" in
+  let bool_decl = decl_of ~names:Resolve.empty_names "(deftype bool () (con false) (con true))" in
+  let unit_decl = decl_of ~names:Resolve.empty_names "(deftype unit () (con unit))" in
+  Store.batch_names t (fun () ->
+      ignore (put_ok t bool_decl);
+      Alcotest.(check bool) "lookups see the batch at once" true (Store.lookup_name t "bool" <> None);
+      Alcotest.(check bool) "nothing written yet" false (Sys.file_exists names_file);
+      (* nested batches write only when the outermost one ends *)
+      Store.batch_names t (fun () -> ignore (put_ok t unit_decl));
+      Alcotest.(check bool) "inner batch end writes nothing" false (Sys.file_exists names_file));
+  let batched = read_file names_file in
+  (* the same installs without a batch persist byte-identical names *)
+  let plain_root = fresh_root () in
+  let plain = open_ok plain_root in
+  ignore (put_ok plain bool_decl);
+  ignore (put_ok plain unit_decl);
+  Alcotest.(check string)
+    "batched names.jqd equals unbatched"
+    (read_file (Filename.concat plain_root "names.jqd"))
+    batched;
+  let reopened = open_ok root in
+  Alcotest.(check bool)
+    "both names persisted" true
+    (Store.lookup_name reopened "bool" <> None && Store.lookup_name reopened "unit" <> None)
+
+let test_batch_names_flushes_on_exception () =
+  let root = fresh_root () in
+  let t = open_ok root in
+  (match
+     Store.batch_names t (fun () ->
+         ignore
+           (put_ok t
+              (decl_of ~names:Resolve.empty_names "(deftype bool () (con false) (con true))"));
+         failwith "interrupted")
+   with
+  | () -> Alcotest.fail "the batch should re-raise"
+  | exception Failure message -> Alcotest.(check string) "original exception" "interrupted" message);
+  Alcotest.(check bool) "names flushed" true (Store.lookup_name (open_ok root) "bool" <> None);
+  (* the batch depth is restored: the next install writes at once again *)
+  ignore (put_ok t (decl_of ~names:Resolve.empty_names "(deftype unit () (con unit))"));
+  Alcotest.(check bool)
+    "later write immediate" true
+    (Store.lookup_name (open_ok root) "unit" <> None)
+
+let test_transaction_inside_batch_restores_exact_bytes () =
+  let root = fresh_root () in
+  let t = open_ok root in
+  let names_file = Filename.concat root "names.jqd" in
+  let unit_hashes = ref None in
+  Store.batch_names t (fun () ->
+      ignore
+        (put_ok t (decl_of ~names:Resolve.empty_names "(deftype bool () (con false) (con true))"));
+      (* the snapshot flushes the pending write, so it captures the batch's names so far *)
+      let refused =
+        Store.transaction t (fun () ->
+            unit_hashes :=
+              Some (put_ok t (decl_of ~names:Resolve.empty_names "(deftype unit () (con unit))"));
+            Error [])
+      in
+      Alcotest.(check bool) "transaction refused" true (Result.is_error refused);
+      Alcotest.(check bool) "bool kept" true (Store.lookup_name t "bool" <> None);
+      Alcotest.(check bool) "unit undone" true (Store.lookup_name t "unit" = None));
+  let reopened = open_ok root in
+  Alcotest.(check bool) "bool persisted" true (Store.lookup_name reopened "bool" <> None);
+  Alcotest.(check bool) "unit not persisted" true (Store.lookup_name reopened "unit" = None);
+  Alcotest.(check bool) "names file present" true (Sys.file_exists names_file);
+  (* the removed object is no longer served from the session's parsed-object cache *)
+  match !unit_hashes with
+  | None -> Alcotest.fail "transaction body did not run"
+  | Some hashes ->
+      Alcotest.(check bool)
+        "restored store cannot locate the removed object" true
+        (Result.is_error (Store.locate t hashes.Canon.decl_hash))
+
+let test_locate_serves_parsed_object () =
+  let root = fresh_root () in
+  let t = open_ok root in
+  let hs =
+    put_ok t (decl_of ~names:Resolve.empty_names "(deftype bool () (con false) (con true))")
+  in
+  let located () =
+    match Store.locate t hs.Canon.decl_hash with
+    | Ok { Store.decl; _ } -> decl
+    | Error _ -> Alcotest.fail "locate failed"
+  in
+  let first = located () in
+  Alcotest.(check bool) "repeat lookups share one parse" true (first == located ());
+  let fresh = open_ok root in
+  match (Store.locate fresh hs.Canon.decl_hash, Canon.hash_decl first) with
+  | Ok { Store.decl; _ }, Ok cached -> (
+      match Canon.hash_decl decl with
+      | Ok reread ->
+          Alcotest.(check bool)
+            "cached declaration is the object's declaration" true
+            (Hash.equal cached.Canon.decl_hash reread.Canon.decl_hash)
+      | Error _ -> Alcotest.fail "rehash failed")
+  | _ -> Alcotest.fail "locate or hash failed"
+
 let suite =
   [
     Alcotest.test_case "permuted hash-equal groups index the persisted order" `Quick
@@ -453,4 +555,11 @@ let suite =
     QCheck_alcotest.to_alcotest prop_dependents_inverse_of_deps;
     Alcotest.test_case "reopen rebuilds index" `Quick test_reopen_rebuilds_index;
     Alcotest.test_case "unknown hash" `Quick test_unknown_hash;
+    Alcotest.test_case "batched names are written once, at the end" `Quick
+      test_batch_names_writes_once_at_end;
+    Alcotest.test_case "a batch flushes its names when interrupted" `Quick
+      test_batch_names_flushes_on_exception;
+    Alcotest.test_case "a transaction inside a batch restores exact names" `Quick
+      test_transaction_inside_batch_restores_exact_bytes;
+    Alcotest.test_case "locate reuses a parsed object" `Quick test_locate_serves_parsed_object;
   ]

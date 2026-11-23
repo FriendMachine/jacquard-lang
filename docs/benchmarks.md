@@ -142,6 +142,39 @@ Two levers were implemented, measured as non-wins, and declined with
 records: intrinsic borrowing (task 81) and arity-exact signatures
 (task 79). The task-master records carry the full reasoning.
 
+## CLI start-up
+
+Every `jacquard check`, `run` and `test` seeds a fresh scratch store with the
+prelude before it reads user code, so an edit-check-test loop pays start-up on
+every call. Measured with `sh scripts/startup-bench.sh` (median of 5; user CPU
+seconds, which are steadier than wall time on a loaded machine) on 2026-11-23,
+same machine as above, before and after the change that removed it:
+
+| Command | Before (wall / user) | After (wall / user) |
+|---|---|---|
+| `check` of a one-line program | 0.63 / 0.58 | 0.08 / 0.05 |
+| `run` of a one-line program | 0.63 / 0.58 | 0.07 / 0.05 |
+| `check` of `bench/startup/transfer.jac` | 0.66 / 0.61 | 0.08 / 0.05 |
+| `test` of it, empty result cache | 1.07 / 0.93 | 0.10 / 0.07 |
+| `test` of it, warm result cache | 0.84 / 0.73 | 0.09 / 0.07 |
+
+Two costs made up nearly all of it:
+
+- **Name index writes.** The store rewrote its whole `names.jqd` after each
+  installed declaration, so seeding about 480 prelude declarations was
+  quadratic (about 0.5 s). The prelude load, `check`, and test-file loading now
+  write the index once, when they end. `run` still writes it as each
+  declaration installs, because it evaluates top-level expressions between
+  them and an interrupted run must keep every name it installed.
+- **Object rereads.** Each lookup of a stored declaration read, parsed and
+  rehashed its object file, and scanned the hash index as a list. A test run
+  that explored a thousand executions did over 100,000 such reads. Lookups now
+  use a hash table, and a session parses each immutable object once.
+
+Results are unchanged: the store's files are byte-identical, and the full test
+suite passes unmodified. The remaining start-up (about 50 ms of CPU) is spread
+across parsing, resolving, hashing and writing the prelude objects.
+
 ## Reproducing
 
 ```bash

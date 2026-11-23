@@ -641,7 +641,9 @@ let wire_builtins (ctx : Eval.ctx) : (unit, Diag.t list) result =
           Ok (Value.VTuple [])
       | [ Value.VInt executions; Value.VCon { name = "false"; _ } ] ->
           (* an exploration that stopped at its limit proves nothing about the executions it
-             skipped: it is a runtime failure wherever it runs, so no caller can pass on it *)
+             skipped: it is a runtime failure wherever it runs, and the test runner also fails the
+             test and the run that saw it, even if the program caught the failure *)
+          Eval.note_exploration ctx ~executions ~complete:false;
           Error
             (Runtime_err.Diagnostic
                (Diag.error ~domain:Warp ~code:"E0905"

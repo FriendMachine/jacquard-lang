@@ -39,25 +39,27 @@ with three outcomes each give nine executions, each with its path.
   >   check.eq(list.length(explore.up-to(9, fn () -> pay-world(both))), 9, int.eq, int.show, "all"))
   > EOF
   $ jacquard test --cache-dir cache pay.jac; echo "exit:$?"
-  FAIL capped/a capped exploration fails
+  FAIL capped/a capped exploration fails (5 executions explored, incomplete)
     ! runtime error: E0905: An exploration stopped at its execution limit. (explore stopped after 5 executions, before every outcome was explored)
   PASS checkout-test/checkout can get stuck (1 check, 7 executions explored, complete)
   PASS exact/a tree of exactly the limit is complete (1 check, 9 executions explored, complete)
   PASS nine/two charges explore nine executions (1 check, 9 executions explored, complete)
   3 passed, 1 failed, 0 skipped, 0 refused
   cache: 0 hit, 4 ran
+  FAIL 1 exploration stopped at the execution limit during this run (E0905)
   exit:1
 
-A cached result repeats the count.
+A cached result repeats the count; a test that hit its limit is never cached.
 
   $ jacquard test --cache-dir cache pay.jac; echo "exit:$?"
-  FAIL capped/a capped exploration fails [cached]
+  FAIL capped/a capped exploration fails (5 executions explored, incomplete)
     ! runtime error: E0905: An exploration stopped at its execution limit. (explore stopped after 5 executions, before every outcome was explored)
   PASS checkout-test/checkout can get stuck (1 check, 7 executions explored, complete) [cached]
   PASS exact/a tree of exactly the limit is complete (1 check, 9 executions explored, complete) [cached]
   PASS nine/two charges explore nine executions (1 check, 9 executions explored, complete) [cached]
   3 passed, 1 failed, 0 skipped, 0 refused
-  cache: 4 hit, 0 ran
+  cache: 3 hit, 1 ran
+  FAIL 1 exploration stopped at the execution limit during this run (E0905)
   exit:1
 
 An exploration that reaches its limit fails wherever it runs, even in a top-level value that
@@ -76,7 +78,7 @@ several tests read, so no test can pass on executions it skipped.
   $ jacquard test shared.jac > shared.out 2>&1; echo "exit:$?"
   exit:1
   $ grep -c "E0905" shared.out
-  1
+  2
 
 Each execution carries its path, one `site=index` label per choice made on it, so
 executions that stop early have shorter paths.
@@ -128,3 +130,31 @@ A tree whose last branch is dead completes exactly at its limit.
   > EOF
   $ jacquard run dead.jac
   1
+
+A program that catches the failure still fails: the test that saw the capped exploration fails
+and is not cached, and so does the run.
+
+  $ cat > caught.jac <<'EOF'
+  > multi effect Coin where { flip : () -> Bool }
+  > coin-world(body) = handle body() {
+  >   | return v -> v
+  >   | flip() resume k -> k(explore.branch("flip", [False, True]))
+  > }
+  > caught : Test
+  > caught = Case("a task swallows the cap", fn () -> {
+  >   let ignored = async.scope(fn () -> list.length(explore.up-to(1, fn () -> coin-world(fn () -> flip()))))
+  >   check.true(True, "after")
+  > })
+  > EOF
+  $ jacquard test --cache-dir cache2 caught.jac; echo "exit:$?"
+  FAIL caught/a task swallows the cap (1 execution explored, incomplete)
+    ! an exploration stopped at its execution limit while this test ran (E0905); a caught failure still fails the test
+  0 passed, 1 failed, 0 skipped, 0 refused
+  cache: 0 hit, 1 ran
+  FAIL 1 exploration stopped at the execution limit during this run (E0905)
+  exit:1
+  $ jacquard test --cache-dir cache2 caught.jac > again.out; echo "exit:$?"
+  exit:1
+  $ grep -c cached again.out
+  0
+  [1]

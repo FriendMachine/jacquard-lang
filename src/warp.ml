@@ -1309,12 +1309,32 @@ let rec run_value ctx ~test_run ~prop_mode ~schedule_plan ~suite_seed ~member ~s
       | Error e, _ -> Error (Printf.sprintf "%s: %s" display e))
   | v -> Error (Printf.sprintf "not a test value: %s" (Value.display v))
 
+(* TEST.4: an exploration that stopped at its limit while this test ran fails the test, even when
+   the program caught the failure it raised (a task's [failed] value) *)
+
 (** [run_discovered ctx ~test_run ~suite_seed ~cache_dir ~granted d] executes one discovered test.
     Hermetic Cases consult the cache by member hash; groups cache as a unit under the group's member
     hash. Relational cases add their variation/mode and leaf-derived seeds. World tests check grant
     coverage and remain uncached. *)
+let capped_failure =
+  "an exploration stopped at its execution limit while this test ran (E0905); a caught failure \
+   still fails the test"
+
+let taint_capped ctx ~caps_before outcomes =
+  if Eval.capped_explorations ctx = caps_before then (outcomes, false)
+  else
+    ( List.map
+        (fun o ->
+          match o.verdict with
+          | Some (Pass _ | NoChecks) ->
+              { o with verdict = Some (Fail { soft = []; hard = Some capped_failure }) }
+          | Some (Fail _) | None -> o)
+        outcomes,
+      true )
+
 let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~suite_seed ~cache_dir
     ~(granted : Hash.t list) (d : discovered) : (outcome list, string) result =
+  let caps_before = Eval.capped_explorations ctx in
   match d with
   | Hermetic (name, h) -> (
       match value_of ctx h with
@@ -1375,9 +1395,12 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
               with
               | Error e -> Error e
               | Ok outcomes ->
+                  let outcomes, tainted = taint_capped ctx ~caps_before outcomes in
                   (* every EXECUTED outcome caches, display and note included, keyed by
                      this test's member hash (a group hash Merkle-covers its members) *)
                   let cacheable =
+                    (not tainted)
+                    &&
                     match schedule_plan with
                     | Default_schedule -> List.for_all (fun o -> o.verdict <> None) outcomes
                     | Seeded_schedules _ ->
@@ -1431,8 +1454,9 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
                   with
                   | Error error -> Error error
                   | Ok outcomes ->
+                      let outcomes, tainted = taint_capped ctx ~caps_before outcomes in
                       if
-                        outcomes <> []
+                        (not tainted) && outcomes <> []
                         && List.for_all (fun outcome -> outcome.verdict <> None) outcomes
                       then
                         cache_store ~cache_dir key
@@ -1473,8 +1497,10 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
         Result.bind
           (Result.map_error Runtime_err.to_string (value_of ctx h))
           (fun v ->
-            run_value ctx ~test_run ~prop_mode ~schedule_plan:Default_schedule ~suite_seed ~member:h
-              ~schedule_path:[] ~structural_path:[ 0 ] ~display:name v)
+            Result.map
+              (fun outcomes -> fst (taint_capped ctx ~caps_before outcomes))
+              (run_value ctx ~test_run ~prop_mode ~schedule_plan:Default_schedule ~suite_seed
+                 ~member:h ~schedule_path:[] ~structural_path:[ 0 ] ~display:name v))
 
 (* --- rendering --- *)
 

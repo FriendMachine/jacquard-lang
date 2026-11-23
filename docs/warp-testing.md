@@ -355,7 +355,11 @@ PASS safe-test/every execution is safe (1 check, 129 executions explored, comple
 limit. An exploration that reaches its limit before every outcome has been explored is a
 runtime failure (E0905, as for an exhaustive property over its budget), wherever it runs:
 in a test body, a top-level value, a property or a relational case. It never returns a
-partial list, so no test can pass on executions it skipped. A test that ran several
+partial list. If a program catches the failure (an `async.scope` turns it into a `Failed`
+value), the test during which it happened still fails and is not cached, and the run exits
+1 with a closing line naming the number of capped explorations, so no test or run passes on
+executions it skipped. An exploration that an outer handler abandons partway reports only the
+executions it completed. A test that ran several
 explorations reports their sum (a case run under several seeded schedules reports the sum
 over every schedule). `Prop` and relational cases do not print counts. A count is reported by the case
 that runs the exploration: an exploration in a top-level value that several cases read is

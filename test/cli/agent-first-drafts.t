@@ -46,24 +46,11 @@ Empty parentheses are still refused.
     Next step: Complete the declaration structure shown at this location.
   [1]
 
-`(p)` in a pattern groups, as `(e)` does in an expression; `(p,)` is a one-element tuple. A
-return clause written like an operation clause binds the handled result.
+Signatures print a one-element tuple type with its trailing comma, the form the type grammar
+reads back.
 
-  $ cat > return-paren.jac <<'EOF'
-  > type Outcome = | Ok | Bad
-  > multi effect Pay where {
-  >   refund : (Text, Int) -> Outcome
-  > }
-  > always-ok(thunk) = handle thunk() {
-  >   | return(x) -> x
-  >   | refund(o, p) resume k -> k(Ok)
-  > }
-  > main() = always-ok(fn () -> refund("o", 1))
-  > first((x,)) = x
-  > EOF
-  $ jacquard check --print-sigs return-paren.jac
-  always-ok : forall a | e. (() ->{Pay | e} a) ->{| e} a
-  main : () ->{} Outcome
+  $ printf 'first((x,)) = x\n' > singleton.jac
+  $ jacquard check --print-sigs singleton.jac
   first : forall a. ((a,)) ->{} a
 
 An operation clause names its continuation with `resume`, and continues by calling it.
@@ -110,7 +97,7 @@ Identifier shapes from other languages say what Jacquard expects.
   $ jacquard check reserved.jac > reserved.out 2>&1; echo "exit:$?"
   exit:1
   $ sed -n 2p reserved.out
-    Cause: expected a pattern, found the reserved word `rec`, which cannot name a value (rename it, or write the escaped name `term:rec` including its backquotes)
+    Cause: expected a pattern, found the reserved word `rec`
 
 Unknown names from other languages suggest the Jacquard function first.
 
@@ -153,12 +140,6 @@ An operation without a mode is reported once.
   $ grep -c E1236 mode.out
   1
 
-The escaped spelling works where the reserved word cannot.
-
-  $ printf 'f(`term:rec`) = `term:rec`\nf(1)\n' > escaped.jac
-  $ jacquard run escaped.jac
-  1
-
 Idioms are offered only where a value is expected: an unknown type is not told about
 `list.map`.
 
@@ -169,8 +150,7 @@ Idioms are offered only where a value is expected: an unknown type is not told a
   0
   [1]
 
-Comments written inside a parenthesized field list or a grouping pattern survive
-formatting, and the result has the same identity.
+Comments written inside a parenthesized field list survive formatting, and the result has the same identity.
 
   $ cat > commented.jac <<'EOF'
   > type T = | C(
@@ -178,16 +158,12 @@ formatting, and the result has the same identity.
   >   Int,
   >   List Text -- the names
   > )
-  > f(t) = match t {
-  >   | C(n, (
-  >     -- the names
-  >     names)) -> n
-  > }
+  > f(t) = match t { | C(n, names) -> n }
   > EOF
   $ jacquard fmt commented.jac > commented-fmt.jac; echo "exit:$?"
   exit:0
   $ grep -c -- "--" commented-fmt.jac
-  3
+  2
   $ jacquard hash commented.jac > a.hash; jacquard hash commented-fmt.jac > b.hash; cmp a.hash b.hash && echo same-identity
   same-identity
 

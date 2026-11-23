@@ -163,10 +163,7 @@ let token_description state token =
   | Surface_lex.Keyword
       (("rec" | "type" | "effect" | "once" | "multi" | "as" | "where" | "quote" | "jqd" | "try") as
        word) ->
-      Printf.sprintf
-        "the reserved word `%s`, which cannot name a value (rename it, or write the escaped name \
-         `term:%s` including its backquotes)"
-        word word
+      Printf.sprintf "the reserved word `%s`" word
   | token -> Surface_lex.show_token token
 
 let advance_recording_invalid state = advance state
@@ -1103,7 +1100,7 @@ and parse_fn state ~allow_newlines keyword =
   in
   Surface_ast.{ it = Fn (params, body); meta }
 
-and parse_pattern_list ?(callable = false) ?trailing_comma state _opening =
+and parse_pattern_list ?(callable = false) state _opening =
   skip_list_space state;
   match (current state).Surface_lex.token with
   | Surface_lex.RParen ->
@@ -1145,7 +1142,6 @@ and parse_pattern_list ?(callable = false) ?trailing_comma state _opening =
             ignore (advance state);
             skip_list_space state;
             if (current state).Surface_lex.token = Surface_lex.RParen then begin
-              Option.iter (fun seen -> seen := true) trailing_comma;
               let closing = advance state in
               (List.rev (pattern :: acc), closing)
             end
@@ -1317,24 +1313,10 @@ and parse_pattern_atom state ~allow_newlines:_ =
       parse_constructor_pattern state token meta (Surface_ast.Named name)
   | Surface_lex.HashRef (hash, Surface_name.Con) ->
       parse_constructor_pattern state token meta (Surface_ast.Hashed hash)
-  | Surface_lex.LParen -> (
+  | Surface_lex.LParen ->
       let opening = advance state in
-      let trailing_comma = ref false in
-      let items, closing = parse_pattern_list ~trailing_comma state opening in
-      match items with
-      | [ single ] when not !trailing_comma ->
-          (* DX.8: `(p)` groups, as `(e)` does in expressions and `(T)` in types; `(p,)` is the
-             one-element tuple. `| return(x) -> x` used to bind a one-element tuple silently. As
-             for expressions, the group is a ["paren"] container (nested groups chain), so a
-             comment inside the parentheses keeps them when printed. *)
-          let group = meta_with_span (span_between opening closing) in
-          let inner = Meta.surface_container "paren" single.Surface_ast.meta in
-          let group =
-            if Meta.is_empty inner then group else Meta.with_surface_container "paren" inner group
-          in
-          { single with Surface_ast.meta = Meta.with_surface_container "paren" group single.meta }
-      | _ -> Surface_ast.{ it = PTuple items; meta = meta_with_span (span_between opening closing) }
-      )
+      let items, closing = parse_pattern_list state opening in
+      Surface_ast.{ it = PTuple items; meta = meta_with_span (span_between opening closing) }
   | Surface_lex.Invalid _ ->
       ignore (advance state);
       pat_hole state token

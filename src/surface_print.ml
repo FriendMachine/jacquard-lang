@@ -410,35 +410,6 @@ let labeled_pattern_omission (pattern : Kernel.pat) =
   Meta.surface_generated pattern.meta = Some "labeled-pattern-omission"
 
 let rec pp_pat context lookup fmt (pat : Kernel.pat) =
-  let paren_meta = Meta.surface_container "paren" pat.meta in
-  if
-    context.trivia
-    && (not (Meta.is_empty paren_meta))
-    && (paren_chain_has_comments paren_meta || meta_has_comments pat.meta)
-  then
-    (* DX.8: a grouping `(p)` keeps its parentheses only when a comment lives inside them *)
-    pp_grouped_pat context lookup paren_meta fmt pat
-  else pp_pat_ungrouped context lookup fmt pat
-
-and pp_grouped_pat context lookup paren_meta fmt pat =
-  pp_leading context paren_meta fmt;
-  let inner = Meta.surface_container "paren" paren_meta in
-  let pat =
-    {
-      pat with
-      Kernel.meta =
-        (if paren_chain_has_comments inner then Meta.with_surface_container "paren" inner pat.meta
-         else Meta.without_surface_container "paren" pat.meta);
-    }
-  in
-  Format.fprintf fmt "(@[<hov>%a" (pp_pat context lookup) pat;
-  pp_inner context paren_meta fmt;
-  if ends_in_last_line_comment context (pp_pat context lookup) paren_meta [ pat ] then
-    Format.pp_force_newline fmt ();
-  Format.fprintf fmt "@])";
-  pp_trailing context paren_meta fmt
-
-and pp_pat_ungrouped context lookup fmt (pat : Kernel.pat) =
   pp_leading context pat.meta fmt;
   (match pat.it with
   | Kernel.PWild -> Format.pp_print_string fmt "_"

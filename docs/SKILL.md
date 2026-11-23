@@ -236,8 +236,9 @@ Common first-draft mistakes, with the form Jacquard expects:
   `match pair { | (a, b) -> ... }`.
 - An operation clause names its continuation with `resume`, and the clause
   continues by calling it: `| ask(q) resume k -> k("yes")`, never `resume(k, v)`.
-- `(p)` in a pattern only groups; a one-element tuple is `(p,)`. Both
-  `| return x -> ...` and `| return(x) -> ...` bind the handled result.
+- A return clause binds the handled result with a plain name:
+  `| return x -> ...`. In a pattern, `(x)` is a one-element tuple, so
+  `| return(x) -> ...` matches something else.
 - A constructor's positional fields may be written `Pair(Int, Text)` or
   `Pair Int Text`; labeled fields are `Pair(left: Int, right: Text)`. A
   constructor pattern binds every field: `Pair(a, b)`.

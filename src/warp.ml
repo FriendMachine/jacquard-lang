@@ -1309,9 +1309,6 @@ let rec run_value ctx ~test_run ~prop_mode ~schedule_plan ~suite_seed ~member ~s
       | Error e, _ -> Error (Printf.sprintf "%s: %s" display e))
   | v -> Error (Printf.sprintf "not a test value: %s" (Value.display v))
 
-(* TEST.4: an exploration stopped at its limit proves nothing about the executions it skipped *)
-let capped o = match o.explored with Some (_, false) -> true | Some (_, true) | None -> false
-
 (** [run_discovered ctx ~test_run ~suite_seed ~cache_dir ~granted d] executes one discovered test.
     Hermetic Cases consult the cache by member hash; groups cache as a unit under the group's member
     hash. Relational cases add their variation/mode and leaf-derived seeds. World tests check grant
@@ -1381,8 +1378,6 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
                   (* every EXECUTED outcome caches, display and note included, keyed by
                      this test's member hash (a group hash Merkle-covers its members) *)
                   let cacheable =
-                    List.for_all (fun o -> not (capped o)) outcomes
-                    &&
                     match schedule_plan with
                     | Default_schedule -> List.for_all (fun o -> o.verdict <> None) outcomes
                     | Seeded_schedules _ ->
@@ -1438,9 +1433,7 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
                   | Ok outcomes ->
                       if
                         outcomes <> []
-                        && List.for_all
-                             (fun outcome -> outcome.verdict <> None && not (capped outcome))
-                             outcomes
+                        && List.for_all (fun outcome -> outcome.verdict <> None) outcomes
                       then
                         cache_store ~cache_dir key
                           (List.map
@@ -1494,21 +1487,10 @@ let explored_detail = function
   | Some (executions, complete) ->
       Printf.sprintf ", %d execution%s %s" executions
         (if executions = 1 then "" else "s")
-        (if complete then "explored, complete" else "explored, capped")
+        (if complete then "explored, complete" else "explored, incomplete")
 
 let render_outcome (t : totals) (o : outcome) : string list =
   match (o.verdict, o.note) with
-  | Some ((Pass _ | NoChecks) as verdict), _ when capped o ->
-      (* TEST.4: an exploration that stopped at its limit never reports as a pass *)
-      let checks = match verdict with Pass n -> n | _ -> 0 in
-      t.incomplete <- t.incomplete + 1;
-      t.ran <- t.ran + 1;
-      [
-        Printf.sprintf "INCOMPLETE %s: exploration stopped at its limit (%d check%s%s)" o.display
-          checks
-          (if checks = 1 then "" else "s")
-          (explored_detail o.explored);
-      ]
   | Some (Pass n), note ->
       t.passed <- t.passed + 1;
       if o.cached then t.hits <- t.hits + 1 else t.ran <- t.ran + 1;

@@ -636,9 +636,24 @@ let wire_builtins (ctx : Eval.ctx) : (unit, Diag.t list) result =
       | args -> type_err "instance.same-v0" args);
   optional_internal "explore.note-v0" (fun args ->
       match args with
-      | [ Value.VInt executions; Value.VCon { name = ("true" | "false") as complete; _ } ] ->
-          Eval.note_exploration ctx ~executions ~complete:(complete = "true");
+      | [ Value.VInt executions; Value.VCon { name = "true"; _ } ] ->
+          Eval.note_exploration ctx ~executions ~complete:true;
           Ok (Value.VTuple [])
+      | [ Value.VInt executions; Value.VCon { name = "false"; _ } ] ->
+          (* an exploration that stopped at its limit proves nothing about the executions it
+             skipped: it is a runtime failure wherever it runs, so no caller can pass on it *)
+          Error
+            (Runtime_err.Diagnostic
+               (Diag.error ~domain:Warp ~code:"E0905"
+                  ~summary:"An exploration stopped at its execution limit."
+                  ~cause:
+                    (Printf.sprintf
+                       "explore stopped after %d execution%s, before every outcome was explored"
+                       executions
+                       (if executions = 1 then "" else "s"))
+                  ~next_step:
+                    "Raise the limit with explore.up-to(limit, thunk), or explore fewer outcomes."
+                  ~contrast:None ()))
       | args -> type_err "explore.note-v0" args);
   optional_internal "governance.fresh-audit-run-id" (fun args ->
       match args with

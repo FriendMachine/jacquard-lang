@@ -3,25 +3,28 @@
 ; with explore.branch(site, outcomes), and explore.all resumes the continuation once per
 ; outcome, depth first in list order, returning (value, path) per completed execution.
 ; The path labels each choice site=index. An empty outcome list ends that execution.
-; explore.up-to stops after `limit` executions; a stopped exploration is CAPPED, which
-; the test runner reports as INCOMPLETE (never a pass). Each call reports its
-; execution count to the runner through the hidden explore.note-v0 builtin.
+; explore.up-to stops after `limit` executions; an exploration that reaches its
+; limit before every outcome was explored is a runtime failure (E0905), never a
+; partial result, so no test can pass on executions it skipped. Each completed
+; exploration reports its execution count to the test runner through the hidden
+; explore.note-v0 builtin, which also raises that failure.
 (defeffect explore () (op explore.branch ((tref text) (tapp (tref list) (tvar a))) (tvar a)))
 
 (defterm ((binding explore.note-v0 () (quote (builtin-marker explore.note-v0)))))
 
 (defterm ((binding explore.default-limit () (lit 10000))))
 
-; one outcome after another at a choice site, threading the executions left;
-; result: (executions in order, executions left, capped)
+; one outcome after another at a choice site, threading the executions left and
+; stopping as soon as an execution beyond the limit would complete; result:
+; (executions newest first, executions left, capped)
 (defterm ((binding explore.each-v0 ()
   (lam ((pvar k) (pvar site) (pvar outcomes) (pvar i) (pvar path) (pvar left) (pvar acc) (pvar capped))
-    (match (var outcomes)
-      (clause (pcon nil) (tuple (var acc) (var left) (var capped)))
-      (clause (pcon cons (pvar o) (pvar rest))
-        (match (app (var lt) (var left) (lit 1))
-          (clause (pcon true) (tuple (var acc) (var left) (var true)))
-          (clause (pcon false)
+    (match (var capped)
+      (clause (pcon true) (tuple (var acc) (var left) (var true)))
+      (clause (pcon false)
+        (match (var outcomes)
+          (clause (pcon nil) (tuple (var acc) (var left) (var false)))
+          (clause (pcon cons (pvar o) (pvar rest))
             (match
               (app (app (var k) (var o))
                 (app (var cons)
@@ -31,18 +34,22 @@
                 (var left))
               (clause (ptuple (pvar found) (pvar left-after) (pvar capped-after))
                 (app (var explore.each-v0) (var k) (var site) (var rest) (app (var add) (var i) (lit 1))
-                  (var path) (var left-after) (app (var list.append) (var acc) (var found))
-                  (app (var bool.or) (var capped) (var capped-after)))))))))))))
+                  (var path) (var left-after) (app (var list.append) (var found) (var acc))
+                  (var capped-after))))))))))))
 
+; a completed execution counts against the limit; one beyond it caps the exploration
 (defterm ((binding explore.run-v0 ()
   (lam ((pvar thunk))
     (handle (app (var thunk))
       (ret (pvar v)
         (lam ((pvar path) (pvar left))
-          (tuple
-            (app (var cons) (tuple (var v) (app (var list.reverse) (var path))) (var nil))
-            (app (var sub) (var left) (lit 1))
-            (var false))))
+          (match (app (var lt) (var left) (lit 1))
+            (clause (pcon true) (tuple (var nil) (var left) (var true)))
+            (clause (pcon false)
+              (tuple
+                (app (var cons) (tuple (var v) (app (var list.reverse) (var path))) (var nil))
+                (app (var sub) (var left) (lit 1))
+                (var false))))))
       (opclause explore.branch ((pvar site) (pvar outcomes)) k
         (lam ((pvar path) (pvar left))
           (app (var explore.each-v0) (var k) (var site) (var outcomes) (lit 0) (var path) (var left)
@@ -51,10 +58,11 @@
 (defterm ((binding explore.up-to ()
   (lam ((pvar limit) (pvar thunk))
     (match (app (app (var explore.run-v0) (var thunk)) (var nil) (var limit))
-      (clause (ptuple (pvar runs) (pwild) (pvar capped))
+      (clause (ptuple (pvar newest-first) (pwild) (pvar capped))
         (let nonrec (pwild)
-          (app (var explore.note-v0) (app (var list.length) (var runs)) (app (var bool.not) (var capped)))
-          (var runs))))))))
+          (app (var explore.note-v0) (app (var list.length) (var newest-first))
+            (app (var bool.not) (var capped)))
+          (app (var list.reverse) (var newest-first)))))))))
 
 (defterm ((binding explore.all ()
   (lam ((pvar thunk)) (app (var explore.up-to) (var explore.default-limit) (var thunk))))))

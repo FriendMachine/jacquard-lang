@@ -352,10 +352,16 @@ PASS safe-test/every execution is safe (1 check, 129 executions explored, comple
 ```
 
 `explore.all` stops after 10,000 executions, and `explore.up-to(limit, thunk)` sets another
-limit. An exploration that stops at its limit returns the executions it completed, and
-the test that ran it is reported INCOMPLETE, never PASS. Like a test that runs out of
-`--fuel`, it is not cached, and the run exits 2. A test that ran several explorations reports
-their sum, and is complete only if each one was. `Prop` tests do not report counts.
+limit. An exploration that reaches its limit before every outcome has been explored is a
+runtime failure (E0905, as for an exhaustive property over its budget), wherever it runs:
+in a test body, a top-level value, a property or a relational case. It never returns a
+partial list, so no test can pass on executions it skipped. A test that ran several
+explorations reports their sum (a case run under several seeded schedules reports the sum
+over every schedule). `Prop` and relational cases do not print counts. A count is reported by the case
+that runs the exploration: an exploration in a top-level value that several cases read is
+evaluated once, so only the first case to read it reports the count (its limit still applies
+to every reader). Check labels inside an explored thunk do not name the path; collect the
+paths from the result to report which executions failed.
 
 ## 7. The cache, and what CI stops doing
 

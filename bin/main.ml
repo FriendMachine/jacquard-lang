@@ -1762,9 +1762,7 @@ let run_suite ?fuel ?alloc ?(ceilings = (None, None, None)) ~store ~ctx ~cctx ~a
           | Ok () ->
               Printf.printf "%d passed, %d failed, %d skipped, %d refused" totals.Warp.passed
                 totals.Warp.failed totals.Warp.skipped totals.Warp.refused;
-              (* a capped exploration is incomplete without any --fuel/--alloc bound (TEST.4) *)
-              if bounded || totals.Warp.incomplete > 0 then
-                Printf.printf ", %d incomplete" totals.Warp.incomplete;
+              if bounded then Printf.printf ", %d incomplete" totals.Warp.incomplete;
               print_newline ();
               if cache_dir <> None then
                 Printf.printf "cache: %d hit, %d ran\n" totals.Warp.hits totals.Warp.ran;

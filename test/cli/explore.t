@@ -32,26 +32,51 @@ with three outcomes each give nine executions, each with its path.
   > checkout-test = Case("checkout can get stuck", fn () ->
   >   check.true(list.any?(runs(checkout), stuck), "some execution is stuck"))
   > capped : Test
-  > capped = Case("a capped exploration is incomplete", fn () ->
+  > capped = Case("a capped exploration fails", fn () ->
   >   check.eq(list.length(explore.up-to(5, fn () -> pay-world(both))), 5, int.eq, int.show, "kept"))
+  > exact : Test
+  > exact = Case("a tree of exactly the limit is complete", fn () ->
+  >   check.eq(list.length(explore.up-to(9, fn () -> pay-world(both))), 9, int.eq, int.show, "all"))
   > EOF
   $ jacquard test --cache-dir cache pay.jac; echo "exit:$?"
-  INCOMPLETE capped/a capped exploration is incomplete: exploration stopped at its limit (1 check, 5 executions explored, capped)
+  FAIL capped/a capped exploration fails
+    ! runtime error: E0905: An exploration stopped at its execution limit. (explore stopped after 5 executions, before every outcome was explored)
   PASS checkout-test/checkout can get stuck (1 check, 7 executions explored, complete)
+  PASS exact/a tree of exactly the limit is complete (1 check, 9 executions explored, complete)
   PASS nine/two charges explore nine executions (1 check, 9 executions explored, complete)
-  2 passed, 0 failed, 0 skipped, 0 refused, 1 incomplete
-  cache: 0 hit, 3 ran
-  exit:2
+  3 passed, 1 failed, 0 skipped, 0 refused
+  cache: 0 hit, 4 ran
+  exit:1
 
-A cached result repeats the count; the capped test is never cached.
+A cached result repeats the count.
 
   $ jacquard test --cache-dir cache pay.jac; echo "exit:$?"
-  INCOMPLETE capped/a capped exploration is incomplete: exploration stopped at its limit (1 check, 5 executions explored, capped)
+  FAIL capped/a capped exploration fails [cached]
+    ! runtime error: E0905: An exploration stopped at its execution limit. (explore stopped after 5 executions, before every outcome was explored)
   PASS checkout-test/checkout can get stuck (1 check, 7 executions explored, complete) [cached]
+  PASS exact/a tree of exactly the limit is complete (1 check, 9 executions explored, complete) [cached]
   PASS nine/two charges explore nine executions (1 check, 9 executions explored, complete) [cached]
-  2 passed, 0 failed, 0 skipped, 0 refused, 1 incomplete
-  cache: 2 hit, 1 ran
-  exit:2
+  3 passed, 1 failed, 0 skipped, 0 refused
+  cache: 4 hit, 0 ran
+  exit:1
+
+An exploration that reaches its limit fails wherever it runs, even in a top-level value that
+several tests read, so no test can pass on executions it skipped.
+
+  $ cat > shared.jac <<'EOF'
+  > multi effect Coin where { flip : () -> Bool }
+  > coin-world(body) = handle body() {
+  >   | return v -> v
+  >   | flip() resume k -> k(explore.branch("flip", [False, True]))
+  > }
+  > runs = explore.up-to(1, fn () -> coin-world(fn () -> flip()))
+  > first : Test
+  > first = Case("reads the capped value", fn () -> check.true(list.empty?(runs), "never reached"))
+  > EOF
+  $ jacquard test shared.jac > shared.out 2>&1; echo "exit:$?"
+  exit:1
+  $ grep -c "E0905" shared.out
+  1
 
 Each execution carries its path, one `site=index` label per choice made on it, so
 executions that stop early have shorter paths.
@@ -72,3 +97,34 @@ The runner's report channel is not a public name.
   $ printf 'explore.note-v0(1000, True)\n' > fake.jac
   $ jacquard check fake.jac 2>&1 | sed -n 2p
     Cause: No name named `explore.note-v0` is in scope.
+
+`explore.all` explores the same executions as a hand-written exploring handler: on the start-up
+benchmark's transfer machine both find 129.
+
+  $ sed -n '/^type Outcome/,/^count(rs, v)/p' ../../bench/startup/transfer.jac > transfer.jac
+  $ cat >> transfer.jac <<'EOF'
+  > bank-world(body) = handle body() {
+  >   | return v -> v
+  >   | debit(a, n) resume k -> k(explore.branch("debit", [Ok, Rejected, Timeout]))
+  >   | credit(a, n) resume k -> k(explore.branch("credit", [Ok, Rejected, Timeout]))
+  >   | journal(t) resume k -> k(())
+  > }
+  > list.length(runs())
+  > list.length(explore.all(fn () -> bank-world(fn () -> transfer("S", "D", 5))))
+  > EOF
+  $ jacquard run transfer.jac
+  129
+  129
+
+A tree whose last branch is dead completes exactly at its limit.
+
+  $ cat > dead.jac <<'EOF'
+  > multi effect Coin where { flip : () -> Bool }
+  > coin-world(body) = handle body() {
+  >   | return v -> v
+  >   | flip() resume k -> k(explore.branch("flip", [False, True]))
+  > }
+  > list.length(explore.up-to(1, fn () -> coin-world(fn () -> if flip() then explore.branch("dead", []) else 1)))
+  > EOF
+  $ jacquard run dead.jac
+  1

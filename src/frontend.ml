@@ -377,17 +377,23 @@ let describe_binding (name, kind) =
 let name_collisions store ~local (declaration : Kernel.decl) =
   let kinds = [ Resolve.KTerm; Resolve.KCon; Resolve.KOp; Resolve.KType; Resolve.KEffect ] in
   let declared = declared_names declaration in
+  let names = List.sort_uniq String.compare (List.map fst declared) in
   List.filter_map
-    (fun (name, kind) ->
+    (fun name ->
+      let own = List.filter_map (fun (n, k) -> if n = name then Some k else None) declared in
+      (* a type and an effect sharing a name is not reported: see the W0302 scope in errors.md *)
+      let type_effect_pair other =
+        List.for_all
+          (fun kind ->
+            List.mem (kind, other)
+              [ (Resolve.KType, Resolve.KEffect); (Resolve.KEffect, Resolve.KType) ])
+          own
+      in
       let others =
         List.filter
           (fun other ->
-            other <> kind
-            (* a type and an effect sharing a name is the prelude's own idiom (Secret) *)
-            && (not
-                  (List.mem (kind, other)
-                     [ (Resolve.KType, Resolve.KEffect); (Resolve.KEffect, Resolve.KType) ]))
-            && (not (List.mem (name, other) declared))
+            (not (List.mem other own))
+            && (not (type_effect_pair other))
             && Hashtbl.mem local (name, other)
             && Option.is_some (Store.lookup_kind store name other))
           kinds
@@ -408,13 +414,15 @@ let name_collisions store ~local (declaration : Kernel.decl) =
                ~summary:"A public name is bound by more than one declaration."
                ~cause:
                  (Printf.sprintf
-                    "%s shares the store name `%s` with %s; the language keeps the kinds apart, \
-                     but a host that binds the program by name (such as jacquard-host) refuses it"
-                    (describe_binding (name, kind))
+                    "%s %s the store name `%s` with %s; the language keeps the kinds apart, but a \
+                     host that binds the program by name (such as jacquard-host) refuses it"
+                    (String.concat " and "
+                       (List.map (fun kind -> describe_binding (name, kind)) own))
+                    (if List.length own = 1 then "shares" else "share")
                     name
                     (String.concat " and " (List.map where others)))
                ~next_step:"Rename one of the declarations." ~contrast:None ()))
-    declared
+    names
 
 type recovery = { diagnostics : Diag.t list; signatures : (string * string) list }
 type outcome = Checked of Checked.t | Recovered of recovery

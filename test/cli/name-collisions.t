@@ -17,9 +17,9 @@ by name cannot, and used to refuse it late without naming the other declaration.
   ok
   exit:0
 
-A record field `charge` does not collide: its accessor is `order.charge`. A type and its
-constructor sharing a name, and a type and an effect sharing a name (as the prelude's `Secret`
-does), are not collisions either.
+A record field `charge` does not collide: its accessor is `order.charge`. A type and its own
+constructor sharing a name is one declaration. A type and an effect sharing a name is outside
+the warning's scope (a host that binds by name alone may still refuse it).
 
   $ cat > fine.jac <<'EOF'
   > type Wrapper = | Wrapper Text
@@ -34,3 +34,18 @@ does), are not collisions either.
   $ jacquard check fine.jac; echo "exit:$?"
   ok
   exit:0
+
+A declaration that binds the name twice (a type and its constructor) gets one warning.
+
+  $ cat > once.jac <<'EOF'
+  > multi effect Pay where {
+  >   charge : (Int) -> Bool
+  > }
+  > type Charge = | Charge(amount: Int)
+  > EOF
+  $ jacquard check once.jac > once.out 2>&1; echo "exit:$?"
+  exit:0
+  $ grep -c W0302 once.out
+  1
+  $ sed -n 2p once.out
+    Cause: type `Charge` and constructor `Charge` share the store name `charge` with operation `charge` at once.jac:1:1-3:2; the language keeps the kinds apart, but a host that binds the program by name (such as jacquard-host) refuses it

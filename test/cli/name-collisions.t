@@ -35,7 +35,7 @@ the warning's scope (a host that binds by name alone may still refuse it).
   ok
   exit:0
 
-A declaration that binds the name twice (a type and its constructor) gets one warning.
+A declaration that binds the name twice (a type and its constructor) gets one warning there.
 
   $ cat > once.jac <<'EOF'
   > multi effect Pay where {

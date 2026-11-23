@@ -104,7 +104,7 @@ malformed source, path, or host-message byte in a string field is replaced with 
 | code | meaning | example |
 |------|---------|---------|
 | W0301 | a bare variable is bound across several value kinds; precedence picked one | `(var abort)` when `abort` is both a term and an op — term > con > op |
-| W0302 | one source binds a store name in several kinds (an operation `charge` beside a type or constructor `Charge`); the language keeps the kinds apart, but a host that binds programs by name refuses it. Names both declarations, once per name. Not reported: same-kind redeclarations, a type and an effect sharing a name, and names the prelude binds (a name-binding host may still refuse these; it should bind by kind) | `type Charge = | Charge(amount: Int)` and an operation `charge` |
+| W0302 | one source binds a store name in several kinds (an operation `charge` beside a type or constructor `Charge`); the language keeps the kinds apart, but a host that binds programs by name refuses it. Reported at each later declaration that binds the name, once per name there, naming every earlier binding of it in another kind. Not reported: a name bound only in one kind (however often it is redeclared), a type and an effect sharing a name, a type with its own constructor or an effect with its own operation, and names the prelude binds (a name-binding host may still refuse some of these; it should bind by kind) | `type Charge = | Charge(amount: Int)` and an operation `charge` |
 
 ## Canonicalization and hashing (E05xx)
 

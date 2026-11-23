@@ -119,7 +119,7 @@ let walk_items ?origin ?(install = Install) ?names ?seal ?(before_resolve = no_h
             | Error _ when install = Install_best_effort -> go rest
             | Error _ as error -> error))
   in
-  go items
+  Store.batch_names store (fun () -> go items)
 
 (* A single-file source walk is sealed: its defining scope is the source itself. Project
    composition walks tops instead and applies its own ownership rules. *)

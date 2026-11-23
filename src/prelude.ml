@@ -228,6 +228,8 @@ let load ~dir store : ((string * Canon.decl_hashes list) list, Diag.t list) resu
           let* () = bind_operation_alias "workspace" "write-file" "workspace.write-file" in
           let* () = bind_operation_alias "workspace" "fetch" "workspace.fetch" in
           let* () = bind_operation_alias "net" "fetch" "fetch" in
+          (* the manifest marks the load complete, so the names it covers reach disk first *)
+          Store.flush_names store;
           Store.write_prelude_manifest store manifest;
           Ok (List.rev acc)
       | file :: rest -> (
@@ -240,7 +242,7 @@ let load ~dir store : ((string * Canon.decl_hashes list) list, Diag.t list) resu
     | `Refuse detail ->
         err ~code:"E0705" "prelude directory %s differs from the store's recorded prelude (%s)" dir
           detail
-    | `Load -> go [] files
+    | `Load -> Store.batch_names store (fun () -> go [] files)
 
 let lookup_hash store ~kind name : (Hash.t, Diag.t list) result =
   match Prelude_identity.lookup_kind store name kind with

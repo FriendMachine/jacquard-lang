@@ -36,6 +36,16 @@ type t = {
   mutable source_overlay : (Hash.t, Kernel.decl) Hashtbl.t option;
       (* EXP.1, session-only and opt-in: the source-resolved declarations this session installed,
          so evaluation sees their source spans; never persisted *)
+  mutable names_deferred : int;
+      (* PERF.1: open {!batch_names} scopes; while positive, [names.jqd] writes are coalesced *)
+  mutable names_dirty : bool; (* the in-memory index has changes [names.jqd] does not have yet *)
+  index_table : (Hash.t, Hash.t * role) Hashtbl.t;
+      (* PERF.1: [index] keyed for lookup; first list entry wins, as [List.find_opt] did. Every
+         write of [index] ({!set_index}, {!put_decl}) updates it in step *)
+  objects_read : (Hash.t, Kernel.decl) Hashtbl.t;
+      (* PERF.1: object files this handle has parsed, by declaration hash. Objects are immutable and
+         content-addressed, so a reread can only produce the same declaration; {!restore}, which
+         removes objects, clears it *)
 }
 
 let objects_dir t = Filename.concat t.root "objects"
@@ -164,12 +174,45 @@ let render_names names hidden call_abis =
             (Form.Hash hash :: List.map (fun slot -> Form.F (call_abi_slot_form slot)) slots))
         call_abis)
 
-let write_names t =
+let flush_names t =
   (* render fully before opening: open_out_bin truncates, and a render failure after
      truncation would destroy the index *)
   let rendered = render_names t.names t.hidden t.call_abis in
   let oc = open_out_bin (names_file t) in
-  Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () -> output_string oc rendered)
+  Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () -> output_string oc rendered);
+  t.names_dirty <- false
+
+(* Every index change persists [names.jqd] at once, except inside {!batch_names}, which writes the
+   final index once when its outermost scope ends. Rendering the whole index per declaration made
+   seeding the prelude quadratic: about 0.5 s of every command's start-up (PERF.1). *)
+let write_names t = if t.names_deferred > 0 then t.names_dirty <- true else flush_names t
+
+let set_index t index =
+  t.index <- index;
+  Hashtbl.reset t.index_table;
+  List.iter (fun (hash, owner) -> Hashtbl.replace t.index_table hash owner) (List.rev index)
+
+let find_index t hash = Hashtbl.find_opt t.index_table hash
+
+(** [batch_names t f] runs [f ()] with [names.jqd] writes coalesced: the file is written once, when
+    the outermost batch ends (normally or by an exception), and only if the index changed. In-memory
+    lookups see every change immediately; {!snapshot} flushes first, so a transaction inside a batch
+    still captures and restores exact bytes. *)
+let batch_names t f =
+  t.names_deferred <- t.names_deferred + 1;
+  let finish () =
+    t.names_deferred <- t.names_deferred - 1;
+    if t.names_deferred = 0 && t.names_dirty then flush_names t
+  in
+  match f () with
+  | result ->
+      (* a failed final write raises its own [Sys_error], as an immediate write would have *)
+      finish ();
+      result
+  | exception exn ->
+      let backtrace = Printexc.get_raw_backtrace () in
+      (try finish () with Sys_error _ -> ());
+      Printexc.raise_with_backtrace exn backtrace
 
 let parse_names ~file src =
   match Reader.parse_string ~file src with
@@ -272,6 +315,10 @@ let open_store root : (t, Diag.t list) result =
       index = [];
       visible = Hashtbl.create 64;
       source_overlay = None;
+      names_deferred = 0;
+      names_dirty = false;
+      objects_read = Hashtbl.create 512;
+      index_table = Hashtbl.create 2048;
     }
   in
   if not (Sys.file_exists root) then Sys.mkdir root 0o755;
@@ -311,7 +358,7 @@ let open_store root : (t, Diag.t list) result =
           (* Hidden derived members remain in the private immutable index so already-resolved,
              store-backed library code can evaluate them. [locate] is the public boundary and
              rejects them; [locate_internal] is reserved for evaluating such stored code. *)
-          t.index <- index;
+          set_index t index;
           let valid_slots slots =
             let labels = List.filter_map Fun.id slots in
             let rec suffix saw_named = function
@@ -645,7 +692,14 @@ let put_decl ?origin t (decl : Kernel.decl) : (Canon.decl_hashes, Diag.t list) r
               | None -> ());
               let stored_decl, stored_hashes = persisted in
               let fresh = index_entries stored_decl stored_hashes in
-              t.index <- fresh @ List.filter (fun (h, _) -> not (List.mem_assoc h fresh)) t.index;
+              (* the fresh entries replace any older entries for the same hashes *)
+              t.index <-
+                (if List.exists (fun (hash, _) -> Hashtbl.mem t.index_table hash) fresh then
+                   fresh @ List.filter (fun (h, _) -> not (List.mem_assoc h fresh)) t.index
+                 else fresh @ t.index);
+              List.iter
+                (fun (hash, owner) -> Hashtbl.replace t.index_table hash owner)
+                (List.rev fresh);
               let new_names =
                 List.filter_map
                   (fun (n, h) ->
@@ -692,7 +746,7 @@ let origin t (h : Hash.t) : string option =
               Printf.eprintf "warning: origin sidecar %s is empty; ignored\n%!" path;
               None)
   in
-  match List.assoc_opt h t.index with
+  match find_index t h with
   | Some (dh, _) -> read_sidecar dh
   | None -> if Sys.file_exists (object_path t h) then read_sidecar h else None
 
@@ -721,7 +775,7 @@ let tier t (h : Hash.t) : Tier.arrow_tier option =
 (** [locate_internal t h] finds the declaration owning [h], including a hidden derived member. Only
     evaluation of already-resolved store objects may use this private-capability path. *)
 let locate_internal t (h : Hash.t) : (located, Diag.t list) result =
-  match List.find_opt (fun (h', _) -> Hash.equal h h') t.index with
+  match Option.map (fun owner -> (h, owner)) (find_index t h) with
   | None -> err ~code:"E0601" "unknown hash %s" (Hash.to_hex h)
   | Some (_, (decl_hash, role))
     when match t.source_overlay with Some o -> Hashtbl.mem o decl_hash | None -> false -> (
@@ -729,13 +783,18 @@ let locate_internal t (h : Hash.t) : (located, Diag.t list) result =
       | Some overlay -> Ok { decl = Hashtbl.find overlay decl_hash; decl_hash; role }
       | None -> assert false)
   | Some (_, (decl_hash, role)) -> (
-      let path = object_path t decl_hash in
-      if not (Sys.file_exists path) then
-        err ~code:"E0601" "missing object file for %s" (Hash.to_hex decl_hash)
-      else
-        match load_object ~file:path (read_file path) with
-        | Error ds -> Error ds
-        | Ok (decl, _) -> Ok { decl; decl_hash; role })
+      match Hashtbl.find_opt t.objects_read decl_hash with
+      | Some decl -> Ok { decl; decl_hash; role }
+      | None -> (
+          let path = object_path t decl_hash in
+          if not (Sys.file_exists path) then
+            err ~code:"E0601" "missing object file for %s" (Hash.to_hex decl_hash)
+          else
+            match load_object ~file:path (read_file path) with
+            | Error ds -> Error ds
+            | Ok (decl, _) ->
+                Hashtbl.replace t.objects_read decl_hash decl;
+                Ok { decl; decl_hash; role }))
 
 (** [retain_source_declarations t] makes this session keep every declaration it installs, as
     resolved from source, and serve it from {!locate} in place of the reloaded object (which is
@@ -834,7 +893,7 @@ let names t = t.names
     direct derived-hash reference may reconstruct such a value. Unknown and whole-declaration hashes
     are left unchanged. *)
 let hide_derived t hash =
-  match List.find_opt (fun (candidate, _) -> Hash.equal candidate hash) t.index with
+  match Option.map (fun owner -> (hash, owner)) (find_index t hash) with
   | Some (_, (_, (Member _ | Constructor _ | Operation _))) ->
       Hashtbl.reset t.visible;
       t.hidden <- List.sort_uniq Hash.compare (hash :: t.hidden);
@@ -851,7 +910,7 @@ let hide_derived t hash =
     ineligible identities return [None]. *)
 let names_view t : Resolve.names =
   let constructor_fields hash =
-    match List.find_opt (fun (known, _) -> Hash.equal known hash) t.index with
+    match Option.map (fun owner -> (hash, owner)) (find_index t hash) with
     | Some (_, (decl_hash, Constructor index)) -> (
         match get t decl_hash with
         | Ok { Kernel.it = Kernel.DefType { cons; _ }; _ } ->
@@ -923,7 +982,7 @@ let bind_name t name hash : (unit, Diag.t list) result =
     err ~code:"E0605" "invalid name %S: names are lowercase symbols [a-z][a-z0-9-]*" name
   else if scheduler_private_hash hash then Error [ private_name_diagnostic name hash ]
   else
-    match List.find_opt (fun (h, _) -> Hash.equal hash h) t.index with
+    match Option.map (fun owner -> (hash, owner)) (find_index t hash) with
     | None -> err ~code:"E0601" "cannot name unknown hash %s" (Hash.to_hex hash)
     | Some _ when List.exists (Hash.equal hash) t.hidden ->
         err ~code:"E0601" "cannot name unknown hash %s" (Hash.to_hex hash)
@@ -1166,6 +1225,7 @@ type snapshot = {
 
 (** [snapshot t] captures what {!restore} needs to undo later installations into [t]. *)
 let snapshot t =
+  if t.names_dirty then flush_names t;
   {
     snapshot_names = t.names;
     snapshot_hidden = t.hidden;
@@ -1184,7 +1244,9 @@ let restore t s =
   Hashtbl.reset t.visible;
   t.hidden <- s.snapshot_hidden;
   t.call_abis <- s.snapshot_call_abis;
-  t.index <- s.snapshot_index;
+  set_index t s.snapshot_index;
+  t.names_dirty <- false;
+  Hashtbl.reset t.objects_read;
   (match s.snapshot_names_file with
   | Some bytes ->
       let channel = open_out_bin (names_file t) in

@@ -24,7 +24,7 @@ Recording changes nothing the run prints or returns.
   600
   $ cat coin.log
   jacquard-exploration-log format=1
-  program source=29c1f7c0d493a4d92ed093198ab04adb7936d853c5f8e89d803895cfcde96eee core=0.3.0 prelude=000fd6c94590094253e7d1a86206744dfe4a3db827f1e7d0bfb332e1afebd985 engine=interpreter
+  program source=29c1f7c0d493a4d92ed093198ab04adb7936d853c5f8e89d803895cfcde96eee core=0.3.0 prelude=613fb390caf98b86663938a39ef7e66bf3fd890246cce00b0a28a40ff467210a engine=interpreter
   seed 3
   grants bytes=12
   console,dist

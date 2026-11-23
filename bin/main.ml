@@ -1842,7 +1842,10 @@ let test_cmd files allows prelude cache_dir no_cache coverage seed samples exhau
               (* test files are declarations only: a top-level expression is a mistake *)
               let loaded = ref [] in
               let load_file file =
-                Frontend.walk ~on_parsed:print_warnings ~syntax:Auto ~file store (read_file file)
+                (* declarations only, and nothing runs until every file is loaded, so the
+                   names index is written once per file *)
+                Frontend.walk ~coalesce_names:true ~on_parsed:print_warnings ~syntax:Auto ~file
+                  store (read_file file)
                   ~before_resolve:(function
                     | Kernel.Expr _ ->
                         Error

@@ -194,10 +194,13 @@ let set_index t index =
 
 let find_index t hash = Hashtbl.find_opt t.index_table hash
 
-(** [batch_names t f] runs [f ()] with [names.jqd] writes coalesced: the file is written once, when
-    the outermost batch ends (normally or by an exception), and only if the index changed. In-memory
-    lookups see every change immediately; {!snapshot} flushes first, so a transaction inside a batch
-    still captures and restores exact bytes. *)
+(** [batch_names t f] runs [f ()] with [names.jqd] writes coalesced. Use it only around installs
+    that run no program code (the prelude load): a process killed inside a batch loses its pending
+    names, so user code evaluated there could leave a persistent store with objects but no names.
+    Writes are coalesced: the file is written once, when the outermost batch ends (normally or by an
+    exception), and only if the index changed. In-memory lookups see every change immediately;
+    {!snapshot} flushes first, so a transaction inside a batch still captures and restores exact
+    bytes. *)
 let batch_names t f =
   t.names_deferred <- t.names_deferred + 1;
   let finish () =

@@ -64,6 +64,7 @@ type installation =
 val walk :
   ?origin:string ->
   ?install:installation ->
+  ?coalesce_names:bool ->
   ?on_parsed:(Diag.t list -> unit) ->
   ?before_resolve:(Kernel.top -> (unit, Diag.t list) result) ->
   ?on_resolved:(Kernel.top -> Diag.t list -> (unit, Diag.t list) result) ->
@@ -81,7 +82,9 @@ val walk :
     and installs a declaration in [store] (stamped with [origin]) before calling [on_installed] with
     its identities. Later tops therefore see exactly the declarations installed before them. The
     first failure stops the walk; declarations installed before it stay installed (see
-    {!install_declarations}). *)
+    {!install_declarations}). With [~coalesce_names:true] the store's name index is written once,
+    when the walk ends ({!Store.batch_names}); pass it only when no hook evaluates program code, so
+    a killed process cannot leave a persistent store with objects but no names. *)
 
 val walk_tops :
   ?origin:string ->

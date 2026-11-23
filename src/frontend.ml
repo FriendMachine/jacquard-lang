@@ -80,8 +80,9 @@ let sealed_refusals (seal : seal) store top =
 
 (* One loop for every command: validate, pre-resolution hook, resolve against the store's current
    names, post-resolution hook, then install a declaration so later tops see it. *)
-let walk_items ?origin ?(install = Install) ?names ?seal ?(before_resolve = no_hook)
-    ?(on_resolved = fun _ _ -> Ok ()) ?(on_installed = fun _ _ -> Ok ()) store validate items =
+let walk_items ?origin ?(install = Install) ?(coalesce_names = false) ?names ?seal
+    ?(before_resolve = no_hook) ?(on_resolved = fun _ _ -> Ok ()) ?(on_installed = fun _ _ -> Ok ())
+    store validate items =
   let names = match names with Some names -> names | None -> Store.names_view store in
   let on_resolved =
     match seal with
@@ -119,16 +120,18 @@ let walk_items ?origin ?(install = Install) ?names ?seal ?(before_resolve = no_h
             | Error _ when install = Install_best_effort -> go rest
             | Error _ as error -> error))
   in
-  Store.batch_names store (fun () -> go items)
+  (* PERF.1: only a walk whose hooks evaluate no program code may hold back names.jqd writes (see
+     Store.batch_names); a killed process would otherwise keep objects without their names *)
+  if coalesce_names then Store.batch_names store (fun () -> go items) else go items
 
 (* A single-file source walk is sealed: its defining scope is the source itself. Project
    composition walks tops instead and applies its own ownership rules. *)
-let walk ?origin ?install ?(on_parsed = ignore) ?before_resolve ?on_resolved ?on_installed ~syntax
-    ~file store source =
+let walk ?origin ?install ?coalesce_names ?(on_parsed = ignore) ?before_resolve ?on_resolved
+    ?on_installed ~syntax ~file store source =
   let* parsed, warnings = parse_tops ~syntax ~names:(Store.names_view store) ~file source in
   on_parsed warnings;
-  walk_items ?origin ?install ~seal:(new_seal ()) ?before_resolve ?on_resolved ?on_installed store
-    validate_parsed_top parsed
+  walk_items ?origin ?install ?coalesce_names ~seal:(new_seal ()) ?before_resolve ?on_resolved
+    ?on_installed store validate_parsed_top parsed
 
 let walk_tops ?origin ?install ?names ?(sealed = false) ?before_resolve ?on_resolved ?on_installed
     store tops =
@@ -419,7 +422,11 @@ let check ?origin ?(on_parsed = ignore) ?(on_resolved = fun _ _ -> ())
             published := published_now :: !published;
             Ok ()
       in
-      let* () = walk ?origin ~on_parsed ~on_resolved ~on_installed ~syntax ~file store source in
+      (* checking evaluates nothing, and the scratch store is private to this call *)
+      let* () =
+        walk ?origin ~coalesce_names:true ~on_parsed ~on_resolved ~on_installed ~syntax ~file store
+          source
+      in
       let tops = List.rev !checked in
       (* the public interface: the final bindings the source introduced, as the store exposes them *)
       let declarations =

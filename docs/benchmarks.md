@@ -162,8 +162,10 @@ Two costs made up nearly all of it:
 
 - **Name index writes.** The store rewrote its whole `names.jqd` after each
   installed declaration, so seeding about 480 prelude declarations was
-  quadratic (about 0.5 s). Installs from the prelude and from a source walk now
-  write the index once, when the batch ends.
+  quadratic (about 0.5 s). The prelude load, `check`, and test-file loading now
+  write the index once, when they end. `run` still writes it as each
+  declaration installs, because it evaluates top-level expressions between
+  them and an interrupted run must keep every name it installed.
 - **Object rereads.** Each lookup of a stored declaration read, parsed and
   rehashed its object file, and scanned the hash index as a list. A test run
   that explored a thousand executions did over 100,000 such reads. Lookups now

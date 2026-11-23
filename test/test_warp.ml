@@ -131,7 +131,15 @@ let test_cache_entry_roundtrip () =
   let outcomes =
     List.mapi
       (fun i v ->
-        (Printf.sprintf "g/case-%d" i, v, (if i = 0 then Some "prop: 5 cases" else None), coverage))
+        ( Printf.sprintf "g/case-%d" i,
+          v,
+          (if i = 0 then Some "prop: 5 cases" else None),
+          coverage,
+          (* TEST.4: explored counts round-trip, with and without a note, complete or capped *)
+          match i with
+          | 0 -> Some (129, true)
+          | 1 -> Some (5, false)
+          | _ -> None ))
       cases
   in
   let printed = Printer.print (Warp.entry_form ~key ~outcomes) in
@@ -143,7 +151,8 @@ let test_cache_entry_roundtrip () =
           Alcotest.(check string) "key" key k;
           Alcotest.(check int) "outcome count" (List.length outcomes) (List.length back);
           List.iter2
-            (fun (d, v, n, c) (d', v', n', c') ->
+            (fun (d, v, n, c, e) (d', v', n', c', e') ->
+              Alcotest.(check bool) "explored" true (e = e');
               Alcotest.(check string) "display" d d';
               Alcotest.(check bool) "verdict" true (v = v');
               Alcotest.(check bool) "note" true (n = n');
@@ -157,10 +166,11 @@ let test_cache_entry_roundtrip () =
    now refuse generators an earlier driver passed, and then to warp-v5, because unreleased builds
    could cache a false pass under warp-v4; uniform-int ranges wider than Int re-key it to warp-v6,
    because an earlier driver drew every value of such a range from one end (or outside it), so a
-   cached pass could be vacuous. Entries under every earlier epoch stay readable under their exact
+   cached pass could be vacuous; and to warp-v7 when cached outcomes began recording explored
+   execution counts (TEST.4). Entries under every earlier epoch stay readable under their exact
    keys and are never reused. *)
 let test_cache_version_invalidates_pre_sc17_entries () =
-  Alcotest.(check string) "driver cache epoch" "warp-v6" Warp.version;
+  Alcotest.(check string) "driver cache epoch" "warp-v7" Warp.version;
   let member = Hash.of_string "sc17-nested-cancellation" in
   let current_key = Warp.cache_key_string (Warp.Hermetic ("display-only", member)) in
   List.iter
@@ -178,7 +188,7 @@ let test_cache_version_invalidates_pre_sc17_entries () =
             (Sys.readdir cache_dir);
           Unix.rmdir cache_dir)
         (fun () ->
-          let outcomes = [ ("old/result", Warp.Pass 1, None, []) ] in
+          let outcomes = [ ("old/result", Warp.Pass 1, None, [], None) ] in
           Warp.cache_store ~cache_dir:(Some cache_dir) old_key outcomes;
           Alcotest.(check bool)
             (epoch ^ " entry remains readable under its exact old key")

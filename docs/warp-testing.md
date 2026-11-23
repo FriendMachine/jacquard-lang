@@ -311,6 +311,52 @@ deterministic simulation testing in the FoundationDB style, assembled from
 library parts, with the exponential budget capped by the same mechanism as
 `--exhaustive`.
 
+### Exploring every outcome of your own effect
+
+`fault.all` explores two answers of one built-in effect. For an effect a program declares
+itself, `explore.all` explores every answer you list. A forwarding handler answers each
+operation with `explore.branch(site, outcomes)`:
+
+```text
+multi effect Bank where {
+  debit : (Text, Int) -> Outcome
+  journal : (Text) -> ()
+}
+
+bank-world(body) = handle body() {
+  | return v -> v
+  | debit(account, n) resume k -> k(explore.branch("debit", [Ok, Rejected, Timeout]))
+  | journal(line) resume k -> k(())
+}
+
+safe-test : Test
+safe-test = Case("every execution is safe", fn () ->
+  check.true(list.all?(explore.all(fn () -> bank-world(fn () -> transfer("a", "b", 5))), safe?),
+             "safe on every execution"))
+```
+
+`explore.all(thunk)` resumes the continuation once per outcome, depth first in list order,
+and returns one `(value, path)` pair per completed execution. The path names each choice as
+`site=index`, for example `["debit=0", "credit=2"]`. An empty outcome list ends that
+execution without a result, so a clause can prune. The user's effect must be `multi`:
+exploring resumes the continuation captured at `explore.branch`, which includes the forwarding
+clause. State an execution needs, such as a simulated bank, is threaded by the forwarding
+handler or kept in `state.scoped` inside the thunk; each execution starts from the state at
+its branch point.
+
+`jacquard test` reports how many executions each `Case` or `WCase` explored, and whether
+the exploration completed:
+
+```text
+PASS safe-test/every execution is safe (1 check, 129 executions explored, complete)
+```
+
+`explore.all` stops after 10,000 executions, and `explore.up-to(limit, thunk)` sets another
+limit. An exploration that stops at its limit returns the executions it completed, and
+the test that ran it is reported INCOMPLETE, never PASS. Like a test that runs out of
+`--fuel`, it is not cached, and the run exits 2. A test that ran several explorations reports
+their sum, and is complete only if each one was. `Prop` tests do not report counts.
+
 ## 7. The cache, and what CI stops doing
 
 Hashing is Merkle-transitive: a definition's hash covers the hashes it references,
@@ -360,8 +406,10 @@ bits (an earlier driver scaled one float, which in a range of more than 2^52
 and fewer than 2^53 values makes some values at least twice as likely as
 others or leaves them unreachable), and a choice over more than 2^16 values
 shrinks by trying `lo` first and then halving its distance from `lo`.
-Existing `warp-v1` to `warp-v5` files remain harmless in the result store but
-cannot satisfy a `warp-v6` lookup.
+Reporting explored executions advances it to `warp-v7`: a cached outcome now
+records how many executions its test explored, so a cache hit repeats the
+count. Existing `warp-v1` to `warp-v6` files remain harmless in the result
+store but cannot satisfy a `warp-v7` lookup.
 
 Coverage gets the same semantic treatment: the interpreter records which
 definition hashes were evaluated under test, and `jacquard test --coverage` reports

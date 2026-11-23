@@ -1,0 +1,60 @@
+; WARP.1: explore every outcome of every choice point. One multi-shot effect carries
+; the choices of any user effect: a forwarding handler answers each of its operations
+; with explore.branch(site, outcomes), and explore.all resumes the continuation once per
+; outcome, depth first in list order, returning (value, path) per completed execution.
+; The path labels each choice site=index. An empty outcome list ends that execution.
+; explore.up-to stops after `limit` executions; a stopped exploration is CAPPED, which
+; the test runner reports as INCOMPLETE (never a pass). Each call reports its
+; execution count to the runner through the hidden explore.note-v0 builtin.
+(defeffect explore () (op explore.branch ((tref text) (tapp (tref list) (tvar a))) (tvar a)))
+
+(defterm ((binding explore.note-v0 () (quote (builtin-marker explore.note-v0)))))
+
+(defterm ((binding explore.default-limit () (lit 10000))))
+
+; one outcome after another at a choice site, threading the executions left;
+; result: (executions in order, executions left, capped)
+(defterm ((binding explore.each-v0 ()
+  (lam ((pvar k) (pvar site) (pvar outcomes) (pvar i) (pvar path) (pvar left) (pvar acc) (pvar capped))
+    (match (var outcomes)
+      (clause (pcon nil) (tuple (var acc) (var left) (var capped)))
+      (clause (pcon cons (pvar o) (pvar rest))
+        (match (app (var lt) (var left) (lit 1))
+          (clause (pcon true) (tuple (var acc) (var left) (var true)))
+          (clause (pcon false)
+            (match
+              (app (app (var k) (var o))
+                (app (var cons)
+                  (app (var text.concat) (var site)
+                    (app (var text.concat) (lit "=") (app (var text.from-int) (var i))))
+                  (var path))
+                (var left))
+              (clause (ptuple (pvar found) (pvar left-after) (pvar capped-after))
+                (app (var explore.each-v0) (var k) (var site) (var rest) (app (var add) (var i) (lit 1))
+                  (var path) (var left-after) (app (var list.append) (var acc) (var found))
+                  (app (var bool.or) (var capped) (var capped-after)))))))))))))
+
+(defterm ((binding explore.run-v0 ()
+  (lam ((pvar thunk))
+    (handle (app (var thunk))
+      (ret (pvar v)
+        (lam ((pvar path) (pvar left))
+          (tuple
+            (app (var cons) (tuple (var v) (app (var list.reverse) (var path))) (var nil))
+            (app (var sub) (var left) (lit 1))
+            (var false))))
+      (opclause explore.branch ((pvar site) (pvar outcomes)) k
+        (lam ((pvar path) (pvar left))
+          (app (var explore.each-v0) (var k) (var site) (var outcomes) (lit 0) (var path) (var left)
+            (var nil) (var false)))))))))
+
+(defterm ((binding explore.up-to ()
+  (lam ((pvar limit) (pvar thunk))
+    (match (app (app (var explore.run-v0) (var thunk)) (var nil) (var limit))
+      (clause (ptuple (pvar runs) (pwild) (pvar capped))
+        (let nonrec (pwild)
+          (app (var explore.note-v0) (app (var list.length) (var runs)) (app (var bool.not) (var capped)))
+          (var runs))))))))
+
+(defterm ((binding explore.all ()
+  (lam ((pvar thunk)) (app (var explore.up-to) (var explore.default-limit) (var thunk))))))

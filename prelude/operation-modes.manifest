@@ -42,3 +42,4 @@ state-instance.state.get-at multi
 state-instance.state.put-at multi
 throw-instance.throw.throw-at once
 emit-instance.emit.emit-at once
+explore.explore.branch multi

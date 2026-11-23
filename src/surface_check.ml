@@ -544,11 +544,22 @@ let sort_diagnostics diagnostics =
     (fun left right -> Int.compare (diagnostic_offset left) (diagnostic_offset right))
     diagnostics
 
+(* Two reports of one problem. The parser and the lowering both refuse an operation without a mode
+   (E1236), at its name and at the whole operation, with one cause; the recovery report keeps the
+   first (DX.8). Other codes must match exactly: nested findings can share a cause. *)
 let same_diagnostic left right =
+  let mode_pair = Diag.code left = Some "E1236" in
   Diag.code left = Diag.code right
-  && Diag.span left = Diag.span right
-  && String.equal (Diag.summary left) (Diag.summary right)
   && String.equal (Diag.cause left) (Diag.cause right)
+  &&
+  match (Diag.span left, Diag.span right) with
+  | a, b when a = b -> mode_pair || String.equal (Diag.summary left) (Diag.summary right)
+  | Some a, Some b ->
+      mode_pair
+      && String.equal a.Span.file b.Span.file
+      && a.Span.start_pos.offset < b.Span.end_pos.offset
+      && b.Span.start_pos.offset < a.Span.end_pos.offset
+  | Some _, None | None, Some _ | None, None -> false
 
 let deduplicate diagnostics =
   List.fold_left

@@ -110,13 +110,77 @@ type state = { names : names; mutable diags : Diag.t list }
 let report st d = st.diags <- d :: st.diags
 let rec take n = function [] -> [] | x :: xs -> if n <= 0 then [] else x :: take (n - 1) xs
 
-let suggestions st ~locals name =
-  List.sort_uniq String.compare (locals @ st.names.all_names ())
-  |> List.filter (fun candidate -> candidate <> name && edit_distance name candidate <= 2)
+(* DX.8: spellings agents bring from other languages (or guess from a sibling's name), mapped to the
+   in-scope name that does the job. Edit distance cannot find these (`not` is far from
+   `bool.not`); an entry is offered only when its target is actually in scope. *)
+let idiom_suggestions =
+  [
+    ("not", "bool.not");
+    ("and", "bool.and");
+    ("or", "bool.or");
+    ("int.eq?", "eq");
+    ("int.eq", "eq");
+    ("int.lt", "int.lt?");
+    ("int.gt", "int.gt?");
+    ("int.le?", "int.lte?");
+    ("int.lte", "int.lte?");
+    ("int.ge?", "int.gte?");
+    ("int.gte", "int.gte?");
+    ("show.int", "text.from-int");
+    ("int.to-text", "text.from-int");
+    ("int.to-string", "text.from-int");
+    ("to-string", "text.from-int");
+    ("str", "text.from-int");
+    ("len", "list.length");
+    ("length", "list.length");
+    ("list.len", "list.length");
+    ("list.size", "list.length");
+    ("text.len", "text.length");
+    ("text.size", "text.length");
+    ("list.get", "list.nth");
+    ("list.at", "list.nth");
+    ("list.first", "list.head");
+    ("list.contains", "list.contains?");
+    ("contains", "list.contains?");
+    ("text.join-with", "text.join-list");
+    ("join", "text.join-list");
+    ("split", "text.split");
+    ("trim", "text.trim");
+    ("strip", "text.trim");
+    ("head", "list.head");
+    ("map", "list.map");
+    ("filter", "list.filter");
+    ("fold", "list.fold");
+    ("reduce", "list.fold");
+    ("reverse", "list.reverse");
+    ("sort", "list.sort");
+    ("zip", "list.zip");
+    ("range", "list.range");
+    ("all", "list.all?");
+    ("any", "list.any?");
+  ]
+
+let suggestions ?(value_position = true) st ~locals name =
+  let in_scope = List.sort_uniq String.compare (locals @ st.names.all_names ()) in
+  let idiom =
+    match List.assoc_opt name idiom_suggestions with
+    | Some _ when not value_position -> []
+    | Some target when List.mem target in_scope -> [ target ]
+    | Some _ | None -> []
+  in
+  idiom
+  @ List.filter
+      (fun candidate ->
+        candidate <> name && (not (List.mem candidate idiom)) && edit_distance name candidate <= 2)
+      in_scope
   |> take 3
 
 let unknown st ~meta ~locals ~what name =
-  let candidates = suggestions st ~locals name in
+  (* idioms name functions: offer them only where a value is expected *)
+  let value_position =
+    match what with "name" | "a value" | "a term" | "term" -> true | _ -> false
+  in
+  let candidates = suggestions ~value_position st ~locals name in
   let contrast =
     match candidates with
     | [ candidate ] ->

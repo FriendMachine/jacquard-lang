@@ -128,7 +128,7 @@ One malformed declaration no longer hides the declarations around it (APP.8). Va
 types keep their constructors known, definitions that only depend on the malformed declaration
 are silent consequences rather than fresh errors, and an independent later error is still
 reported, in source order, with a nonzero status. The originating diagnostic shows the surface
-spelling and both accepted field syntaxes.
+location of the damage.
 
   $ cat > cascade.jac <<'EOF'
   > type Shape = | Circle Int | Square Int
@@ -136,7 +136,7 @@ spelling and both accepted field syntaxes.
   >   | Circle(r) -> mul(r, r)
   >   | Square(w) -> mul(w, w)
   > }
-  > type World = | World(Int, Text)
+  > type World = | World(Int,, Text)
   > describe(w) = match w {
   >   | World(n, t) -> t
   > }
@@ -145,18 +145,18 @@ spelling and both accepted field syntaxes.
   > total(Circle(1), Square(2))
   > EOF
   $ jacquard check cascade.jac; echo "exit:$?"
-  cascade.jac:6:21-22: error[E1225]: A type or effect declaration is incomplete
-    Cause: constructor `World` uses parentheses around positional field types; write `World T1 T2` (space-separated types), or label the fields: `World(a: T1, b: T2)`
-    Next step: Complete the declaration structure shown at this location.
+  cascade.jac:6:26-27: error[E1220]: Surface syntax is invalid
+    Cause: expected a type, found ,
+    Next step: Correct the syntax at this location and parse the file again.
   cascade.jac:11:18-30: error[E0301]: This reference names something that is not in scope.
     Cause: No name named `missing-name` is in scope.
     Next step: Correct the reference to an in-scope name or declaration.
   exit:1
 
-Labeled fields are the other accepted spelling; the same program with `World(n: Int, t: Text)`
-checks, so the recovery report and the strict checker agree on what was wrong.
+With its fields declared, `World(n: Int, t: Text)` (or positionally, `World(Int, Text)`), the
+same program checks, so the recovery report and the strict checker agree on what was wrong.
 
-  $ sed 's/World(Int, Text)/World(n: Int, t: Text)/' cascade.jac > labeled.jac
+  $ sed 's/World(Int,, Text)/World(n: Int, t: Text)/' cascade.jac > labeled.jac
   $ jacquard check labeled.jac; echo "exit:$?"
   labeled.jac:11:18-30: error[E0301]: This reference names something that is not in scope.
     Cause: No name named `missing-name` is in scope.

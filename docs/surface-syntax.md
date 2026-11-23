@@ -113,7 +113,7 @@ arm-body      := expr | block
 
 pattern       := pattern-atom ["as" binding-name]
 pattern-atom  := "_" | binding-name | literal | con-name ["(" (patterns | labeled-patterns)? ")"]
-| "(" patterns? ")"
+| "()" | "(" pattern ")" | "(" pattern "," ")" | "(" patterns ")"
 labeled-patterns := term-name ":" cont pattern ("," term-name ":" cont pattern)* [","]
 type          := type-app | "(" types? ")" row cont type
 | "forall" forall-vars? "." cont type
@@ -210,8 +210,16 @@ mixed-syntax authoring.
 For constructors, unlabeled fields print with whitespace (`Some a`,
 `Pair a b`). If any field is labeled, all fields print in parentheses and
 only labeled fields carry a colon (`MkFleet(inv: SvcMood, pay: SvcMood)`).
-The parser accepts exactly those two shapes; `Some(a)` is not a second
-canonical spelling for `Some a`.
+The parser also accepts unlabeled fields in parentheses, `Pair(a, b)`, the
+way a constructor is applied and matched (DX.8); it is the same declaration
+as `Pair a b`, and the printer keeps the space-separated form, except when
+the first field prints in parentheses: `Log (List Text) Int` would read back
+as the field list `(List Text)` followed by a stray `Int`, so that
+constructor prints as `Log(List Text, Int)`.
+
+In patterns, `(p)` only groups, as `(e)` does in expressions and `(T)` in
+types; the one-element tuple pattern is `(p,)` (DX.8). A return clause may
+therefore be written `| return x -> ...` or `| return(x) -> ...`.
 
 Names make pattern intent explicit: `Up` is a constructor pattern while `up`
 is a fresh binding pattern. Labeled-field declarations generate one accessor

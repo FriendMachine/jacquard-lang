@@ -86,6 +86,9 @@ let test_all_pattern_forms_and_literals () =
 
 let test_d34_escapes_hashes_and_shape () =
   let zeros = String.make 64 '0' in
+  (* DX.8: `(p)` groups, as `(e)` and `(T)` do; `(p,)` is the one-element tuple *)
+  check_equivalent "a parenthesized pattern groups" "match value { | (one) -> one | (Up) -> 1 }"
+    "(match (var value) (clause (pvar one) (var one)) (clause (pcon up) (lit 1)))";
   check_equivalent "D34 Up versus up" "match value { | Up -> 1 | up -> up }"
     "(match (var value) (clause (pcon up) (lit 1)) (clause (pvar up) (var up)))";
   check_equivalent "escaped and hashed constructors"
@@ -95,8 +98,8 @@ let test_d34_escapes_hashes_and_shape () =
         2)))"
        zeros);
   check_equivalent "unit singleton nested as and five fields"
-    "match value { | () -> 0 | (one) -> one | Outer(Inner(x) as inner) as outer -> outer | Five(a, \
-     b, c, d, e) -> e }"
+    "match value { | () -> 0 | (one,) -> one | Outer(Inner(x) as inner) as outer -> outer | \
+     Five(a, b, c, d, e) -> e }"
     "(match (var value) (clause (ptuple) (lit 0)) (clause (ptuple (pvar one)) (var one)) (clause \
      (pas outer (pcon outer (pas inner (pcon inner (pvar x))))) (var outer)) (clause (pcon five \
      (pvar a) (pvar b) (pvar c) (pvar d) (pvar e)) (var e)))";

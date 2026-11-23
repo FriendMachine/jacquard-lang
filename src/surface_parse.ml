@@ -159,6 +159,14 @@ let token_description state token =
   | Surface_lex.Keyword "with" ->
       "the reserved word `with` (it only introduces a field update, `Ctor(value with label: \
        expr)`; a name spelled `with` needs the `term:` escape)"
+  (* DX.8: reserved words agents reach for as variable names *)
+  | Surface_lex.Keyword
+      (("rec" | "type" | "effect" | "once" | "multi" | "as" | "where" | "quote" | "jqd" | "try") as
+       word) ->
+      Printf.sprintf
+        "the reserved word `%s`, which cannot name a value (rename it, or write the escaped name \
+         `term:%s` including its backquotes)"
+        word word
   | token -> Surface_lex.show_token token
 
 let advance_recording_invalid state = advance state
@@ -759,6 +767,12 @@ and parse_primary state ~allow_newlines =
   | Surface_lex.Invalid _ ->
       ignore (advance state);
       expr_hole state token
+  | Surface_lex.Keyword "resume" ->
+      report state token
+        "`resume` only names the continuation in a handler clause (`| op(x) resume k -> body`); to \
+         continue the computation, call the continuation: `k(value)`";
+      ignore (advance state);
+      expr_hole state token
   | _ ->
       report state token
         (Printf.sprintf "expected an expression, found %s" (token_description state token));
@@ -1089,7 +1103,7 @@ and parse_fn state ~allow_newlines keyword =
   in
   Surface_ast.{ it = Fn (params, body); meta }
 
-and parse_pattern_list ?(callable = false) state _opening =
+and parse_pattern_list ?(callable = false) ?trailing_comma state _opening =
   skip_list_space state;
   match (current state).Surface_lex.token with
   | Surface_lex.RParen ->
@@ -1131,6 +1145,7 @@ and parse_pattern_list ?(callable = false) state _opening =
             ignore (advance state);
             skip_list_space state;
             if (current state).Surface_lex.token = Surface_lex.RParen then begin
+              Option.iter (fun seen -> seen := true) trailing_comma;
               let closing = advance state in
               (List.rev (pattern :: acc), closing)
             end
@@ -1302,10 +1317,24 @@ and parse_pattern_atom state ~allow_newlines:_ =
       parse_constructor_pattern state token meta (Surface_ast.Named name)
   | Surface_lex.HashRef (hash, Surface_name.Con) ->
       parse_constructor_pattern state token meta (Surface_ast.Hashed hash)
-  | Surface_lex.LParen ->
+  | Surface_lex.LParen -> (
       let opening = advance state in
-      let items, closing = parse_pattern_list state opening in
-      Surface_ast.{ it = PTuple items; meta = meta_with_span (span_between opening closing) }
+      let trailing_comma = ref false in
+      let items, closing = parse_pattern_list ~trailing_comma state opening in
+      match items with
+      | [ single ] when not !trailing_comma ->
+          (* DX.8: `(p)` groups, as `(e)` does in expressions and `(T)` in types; `(p,)` is the
+             one-element tuple. `| return(x) -> x` used to bind a one-element tuple silently. As
+             for expressions, the group is a ["paren"] container (nested groups chain), so a
+             comment inside the parentheses keeps them when printed. *)
+          let group = meta_with_span (span_between opening closing) in
+          let inner = Meta.surface_container "paren" single.Surface_ast.meta in
+          let group =
+            if Meta.is_empty inner then group else Meta.with_surface_container "paren" inner group
+          in
+          { single with Surface_ast.meta = Meta.with_surface_container "paren" group single.meta }
+      | _ -> Surface_ast.{ it = PTuple items; meta = meta_with_span (span_between opening closing) }
+      )
   | Surface_lex.Invalid _ ->
       ignore (advance state);
       pat_hole state token
@@ -1564,7 +1593,20 @@ and parse_operation_clause state start =
     | None -> ([], None)
   in
   skip_comments state;
-  ignore (expect state (Surface_lex.Keyword "resume") "`resume` after operation parameters");
+  (match (current state).Surface_lex.token with
+  | Surface_lex.Keyword "resume" -> ignore (advance state)
+  | Surface_lex.Ident name when Surface_name.valid_lower_name name ->
+      (* DX.8: `| op(x) k -> ...`; the binder is still parsed, so the clause body checks *)
+      report state (current state)
+        (Printf.sprintf
+           "expected `resume` before the continuation binder `%s`: write `| op(...) resume %s -> \
+            body`, then continue with `%s(value)`"
+           name name name)
+  | Surface_lex.Arrow ->
+      report state (current state)
+        "an operation clause names its continuation before `->`: write `| op(...) resume k -> \
+         body` (or `resume _` when the clause never continues)"
+  | _ -> ignore (expect state (Surface_lex.Keyword "resume") "`resume` after operation parameters"));
   skip_comments state;
   let resume_token = current state in
   let oresume =
@@ -2512,33 +2554,14 @@ let parse_constructor_fields state constructor opening =
                          (token_description state (current state)));
                     synchronize_paren state)))
   done;
-  if not !has_label then begin
-    let placeholders =
-      List.mapi (fun index _ -> Printf.sprintf "T%d" (index + 1)) (List.rev !fields)
-    in
-    let labels = [ "a"; "b"; "c"; "d"; "e"; "f"; "g"; "h" ] in
-    let labeled =
-      List.mapi
-        (fun index placeholder ->
-          Printf.sprintf "%s: %s"
-            (match List.nth_opt labels index with
-            | Some l -> l
-            | None -> "field" ^ string_of_int index)
-            placeholder)
-        placeholders
-    in
+  (* DX.8: `Ctor(T1, T2)` declares positional fields, the same constructor as `Ctor T1 T2`, so a
+     declaration can be written the way the constructor is applied and matched; the printer keeps
+     the space-separated form. Empty parentheses stay an error. *)
+  if (not !has_label) && !fields = [] then
     report_code state opening "E1225"
-      (if placeholders = [] then
-         Printf.sprintf
-           "constructor `%s` has empty parentheses; write `%s` alone for a constructor without \
-            fields"
-           spelling spelling
-       else
-         Printf.sprintf
-           "constructor `%s` uses parentheses around positional field types; write `%s %s` \
-            (space-separated types), or label the fields: `%s(%s)`"
-           spelling spelling (String.concat " " placeholders) spelling (String.concat ", " labeled))
-  end;
+      (Printf.sprintf
+         "constructor `%s` has empty parentheses; write `%s` alone for a constructor without fields"
+         spelling spelling);
   (List.rev !fields, !closing)
 
 let parse_constructor state =

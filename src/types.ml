@@ -1266,6 +1266,7 @@ let show ?(name_of = fun h -> String.sub (Hash.to_hex h) 0 8) ?effect_name_of ?(
             let s = name_of h ^ " " ^ String.concat " " (List.map (go ~paren:true) args) in
             if paren then "(" ^ s ^ ")" else s)
     | TTuple [] -> "()"
+    | TTuple [ item ] -> "(" ^ go ~paren:false item ^ ",)" (* `(T)` only groups *)
     | TTuple items -> "(" ^ String.concat ", " (List.map (go ~paren:false) items) ^ ")"
     | TArrow (params, row, result) ->
         let s =

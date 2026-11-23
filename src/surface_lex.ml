@@ -458,6 +458,23 @@ let read_number state =
   | Some (Form.Real value) -> located state start_pos (Literal (Kernel.LReal value))
   | _ -> fail state start_pos "E1212" (Printf.sprintf "malformed numeric literal `%s`" spelling)
 
+(* DX.8: the identifier shapes agents bring from other languages, each with the Jacquard form *)
+let malformed_identifier_hint spelling =
+  let segments = String.split_on_char '.' spelling in
+  let numeric segment = segment <> "" && String.for_all (fun c -> c >= '0' && c <= '9') segment in
+  let has c = String.contains spelling c in
+  let starts_lower = spelling <> "" && spelling.[0] >= 'a' && spelling.[0] <= 'z' in
+  let has_upper = String.exists (fun c -> c >= 'A' && c <= 'Z') spelling in
+  if List.length segments > 1 && List.exists numeric (List.tl segments) then
+    "; tuples have no positional field access: destructure with `let (a, b) = pair` or `match pair \
+     { | (a, b) -> ... }`"
+  else if has '_' && starts_lower then
+    "; value names are lowercase-kebab (`total-count`, not `total_count`)"
+  else if starts_lower && has_upper then
+    "; value names are lowercase-kebab (`total-count`, not `totalCount`); types and constructors \
+     are PascalCase"
+  else ""
+
 let read_name state =
   let start_pos = pos state in
   let spelling = read_atom state in
@@ -482,7 +499,10 @@ let read_name state =
     || Option.is_some (Surface_name.of_pascal spelling)
     || Option.is_some (Surface_name.of_pascal_task_twin spelling)
   then located state start_pos (Ident spelling)
-  else fail state start_pos "E1211" (Printf.sprintf "malformed surface identifier `%s`" spelling)
+  else
+    fail state start_pos "E1211"
+      (Printf.sprintf "malformed surface identifier `%s`%s" spelling
+         (malformed_identifier_hint spelling))
 
 let one state constructor =
   let start_pos = pos state in

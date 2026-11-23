@@ -35,7 +35,7 @@ groupref-outside | groupref-outside.jqd:1:1-13: error[E0805]: A referenced decla
   Cause: groupref 5 outside its group
   Next step: Use an available declaration of the required kind.
 pcon-pattern-arity | pcon-pattern-arity.jqd:1:41-52: error[E0806]: Constructor pattern arity does not agree
-  Cause: constructor some expects 1 argument(s) in this pattern, got 0
+  Cause: constructor `Some` has 1 field(s) but this pattern has 0; it is declared as `Some : forall a. (a) ->{} Option a`
   Next step: Bind every field declared by the constructor.
 deftype-arity | deftype-arity.jqd:1:41-79: error[E0810]: Type constructor arity does not agree
   Cause: type option expects 1 argument(s), got 2

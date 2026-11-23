@@ -1737,9 +1737,14 @@ let rec infer_pat ctx (p : Kernel.pat) : ty * (string * ty) list =
       match (repr con_ty, ps) with
       | TArrow (fields, _, result), ps ->
           if List.length fields <> List.length ps then
+            (* DX.8: the surface spelling and the declared field types, so the fix is visible *)
             err ~meta ~next_step:"Bind every field declared by the constructor." ~code:"E0806"
-              "constructor %s expects %d argument(s) in this pattern, got %d" (name_of ctx h)
-              (List.length fields) (List.length ps);
+              "constructor `%s` has %d field(s) but this pattern has %d; it is declared as `%s : \
+               %s`"
+              (surface_name_of ctx Surface_name.Con h)
+              (List.length fields) (List.length ps)
+              (surface_name_of ctx Surface_name.Con h)
+              (show_scheme ctx s);
           let bindings =
             concat_map2
               (fun field p ->
@@ -1752,8 +1757,9 @@ let rec infer_pat ctx (p : Kernel.pat) : ty * (string * ty) list =
       | result, [] -> (result, [])
       | result, _ :: _ ->
           ignore result;
-          err ~meta ~code:"E0806" "constructor %s takes no arguments in this pattern"
-            (name_of ctx h))
+          err ~meta ~code:"E0806" "constructor `%s` has no fields; match it as `%s` alone"
+            (surface_name_of ctx Surface_name.Con h)
+            (surface_name_of ctx Surface_name.Con h))
   | Kernel.PCon (Kernel.Named n, _) -> err ~meta ~code:"E0811" "unresolved constructor `%s`" n
   | Kernel.PTuple ps ->
       let tys_bs = List.map (infer_pat ctx) ps in

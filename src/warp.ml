@@ -1076,6 +1076,26 @@ let ceiling_budgets : (string * int) list ref = ref []
     alongside the incomplete test and resets this before each test. They are never cached. *)
 let partial_outcomes : outcome list ref = ref []
 
+(* TEST.4: caps the Case and WCase lanes attributed to themselves; a discovered test fails its
+   other outcomes only for caps no case accounts for (one raised while building the test value) *)
+let attributed_caps = ref 0
+
+let capped_failure =
+  "an exploration stopped at its execution limit while this test ran (E0905); a caught failure \
+   still fails the test"
+
+(* fail one case's outcome when a cap happened while it ran, even if the program caught it *)
+let attribute_caps ctx ~caps_before (o : outcome) =
+  let delta = Eval.capped_explorations ctx - caps_before in
+  if delta <= 0 then o
+  else begin
+    attributed_caps := !attributed_caps + delta;
+    match o.verdict with
+    | Some (Pass _ | NoChecks) ->
+        { o with verdict = Some (Fail { soft = []; hard = Some capped_failure }) }
+    | Some (Fail _) | None -> o
+  end
+
 let bounded_key key =
   let key =
     match !fuel_budget with
@@ -1201,6 +1221,7 @@ let rec run_value ctx ~test_run ~prop_mode ~schedule_plan ~suite_seed ~member ~s
     when prelude_con ctx "case" con -> (
       let display = display ^ "/" ^ label in
       let schedule_path = schedule_path @ [ label ] in
+      let caps_before = Eval.capped_explorations ctx in
       let run, explored =
         Eval.with_fresh_exploration ctx @@ fun () ->
         match schedule_plan with
@@ -1218,7 +1239,11 @@ let rec run_value ctx ~test_run ~prop_mode ~schedule_plan ~suite_seed ~member ~s
       in
       match run with
       | Ok (verdict, coverage, note) ->
-          Ok [ { display; verdict = Some verdict; note; coverage; cached = false; explored } ]
+          Ok
+            [
+              attribute_caps ctx ~caps_before
+                { display; verdict = Some verdict; note; coverage; cached = false; explored };
+            ]
       | Error e -> Error (Printf.sprintf "%s: %s" display e))
   | Value.VCon { con; name = "prop"; args = [ Value.VText label; thunk ]; _ }
     when prelude_con ctx "prop" con -> (
@@ -1302,39 +1327,38 @@ let rec run_value ctx ~test_run ~prop_mode ~schedule_plan ~suite_seed ~member ~s
     when prelude_con ctx "wcase" con -> (
       (* world lane: the caller already verified grants; never cached *)
       let display = display ^ "/" ^ label in
+      let caps_before = Eval.capped_explorations ctx in
       match Eval.with_fresh_exploration ctx (fun () -> run_thunk ctx ~test_run thunk) with
       | Ok (verdict, coverage), explored ->
           Ok
-            [ { display; verdict = Some verdict; note = None; coverage; cached = false; explored } ]
+            [
+              attribute_caps ctx ~caps_before
+                { display; verdict = Some verdict; note = None; coverage; cached = false; explored };
+            ]
       | Error e, _ -> Error (Printf.sprintf "%s: %s" display e))
   | v -> Error (Printf.sprintf "not a test value: %s" (Value.display v))
 
-(* TEST.4: an exploration that stopped at its limit while this test ran fails the test, even when
-   the program caught the failure it raised (a task's [failed] value) *)
-
-(** [run_discovered ctx ~test_run ~suite_seed ~cache_dir ~granted d] executes one discovered test.
-    Hermetic Cases consult the cache by member hash; groups cache as a unit under the group's member
-    hash. Relational cases add their variation/mode and leaf-derived seeds. World tests check grant
-    coverage and remain uncached. *)
-let capped_failure =
-  "an exploration stopped at its execution limit while this test ran (E0905); a caught failure \
-   still fails the test"
-
-let taint_capped ctx ~caps_before outcomes =
-  if Eval.capped_explorations ctx = caps_before then (outcomes, false)
-  else
-    ( List.map
+(* the discovered test's caps not attributed to one of its cases fail all its passing outcomes;
+   any cap at all keeps the test out of the cache *)
+let taint_capped ctx ~caps_before ~attributed_before outcomes =
+  let caps = Eval.capped_explorations ctx - caps_before in
+  let unattributed = caps - (!attributed_caps - attributed_before) in
+  let outcomes =
+    if unattributed <= 0 then outcomes
+    else
+      List.map
         (fun o ->
           match o.verdict with
           | Some (Pass _ | NoChecks) ->
               { o with verdict = Some (Fail { soft = []; hard = Some capped_failure }) }
           | Some (Fail _) | None -> o)
-        outcomes,
-      true )
+        outcomes
+  in
+  (outcomes, caps > 0)
 
 let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~suite_seed ~cache_dir
     ~(granted : Hash.t list) (d : discovered) : (outcome list, string) result =
-  let caps_before = Eval.capped_explorations ctx in
+  let caps_before = Eval.capped_explorations ctx and attributed_before = !attributed_caps in
   match d with
   | Hermetic (name, h) -> (
       match value_of ctx h with
@@ -1395,7 +1419,9 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
               with
               | Error e -> Error e
               | Ok outcomes ->
-                  let outcomes, tainted = taint_capped ctx ~caps_before outcomes in
+                  let outcomes, tainted =
+                    taint_capped ctx ~caps_before ~attributed_before outcomes
+                  in
                   (* every EXECUTED outcome caches, display and note included, keyed by
                      this test's member hash (a group hash Merkle-covers its members) *)
                   let cacheable =
@@ -1454,7 +1480,9 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
                   with
                   | Error error -> Error error
                   | Ok outcomes ->
-                      let outcomes, tainted = taint_capped ctx ~caps_before outcomes in
+                      let outcomes, tainted =
+                        taint_capped ctx ~caps_before ~attributed_before outcomes
+                      in
                       if
                         (not tainted) && outcomes <> []
                         && List.for_all (fun outcome -> outcome.verdict <> None) outcomes
@@ -1498,7 +1526,7 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
           (Result.map_error Runtime_err.to_string (value_of ctx h))
           (fun v ->
             Result.map
-              (fun outcomes -> fst (taint_capped ctx ~caps_before outcomes))
+              (fun outcomes -> fst (taint_capped ctx ~caps_before ~attributed_before outcomes))
               (run_value ctx ~test_run ~prop_mode ~schedule_plan:Default_schedule ~suite_seed
                  ~member:h ~schedule_path:[] ~structural_path:[ 0 ] ~display:name v))
 

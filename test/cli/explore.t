@@ -97,7 +97,9 @@ executions that stop early have shorter paths.
 The runner's report channel is not a public name.
 
   $ printf 'explore.note-v0(1000, True)\n' > fake.jac
-  $ jacquard check fake.jac 2>&1 | sed -n 2p
+  $ jacquard check fake.jac > fake.out 2>&1; echo "exit:$?"
+  exit:1
+  $ sed -n 2p fake.out
     Cause: No name named `explore.note-v0` is in scope.
 
 `explore.all` explores the same executions as a hand-written exploring handler: on the start-up
@@ -156,5 +158,37 @@ and is not cached, and so does the run.
   $ jacquard test --cache-dir cache2 caught.jac > again.out; echo "exit:$?"
   exit:1
   $ grep -c cached again.out
+  0
+  [1]
+
+The failure belongs to the case that caught the cap: its siblings in a group are not failed, and
+it stays failed when a later sibling runs out of fuel.
+
+  $ cat > group.jac <<'EOF'
+  > multi effect Coin where { flip : () -> Bool }
+  > coin-world(body) = handle body() {
+  >   | return v -> v
+  >   | flip() resume k -> k(explore.branch("flip", [False, True]))
+  > }
+  > spin(n) = if eq(n, 0) then 0 else spin(int.sub(n, 1))
+  > suite : Test
+  > suite = Group("g", [
+  >   Case("a caught cap", fn () -> {
+  >     let ignored = async.scope(fn () -> list.length(explore.up-to(1, fn () -> coin-world(fn () -> flip()))))
+  >     check.true(True, "after")
+  >   }),
+  >   Case("b unrelated", fn () -> check.true(True, "fine")),
+  >   Case("c burns fuel", fn () -> check.eq(spin(100000), 0, int.eq, int.show, "spun"))
+  > ])
+  > EOF
+  $ jacquard test group.jac > group.out; echo "exit:$?"
+  exit:1
+  $ grep -c "PASS suite/g/b unrelated" group.out
+  1
+  $ grep -c "FAIL suite/g/a caught cap" group.out
+  1
+  $ jacquard test --fuel 200000 group.jac > fuel.out; echo "exit:$?"
+  exit:1
+  $ grep -c "PASS suite/g/a caught cap" fuel.out
   0
   [1]

@@ -138,6 +138,7 @@ let fresh =
     "div";
     "div-real";
     "eq";
+    "explore.note-v0";
     "governance.effect-order-key";
     "governance.fresh-audit-run-id";
     "governance.require-audit-run-id";

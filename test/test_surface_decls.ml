@@ -291,7 +291,13 @@ let test_type_declarations () =
       } ->
       ()
   | _ -> Alcotest.fail "valid multiline labeled field type was weakened by recovery lookahead");
-  has_code "E1225" "type Bad a = | Some(a)\n"
+  (* DX.8: positional fields in parentheses are the same declaration as the space-separated form *)
+  let parenthesized = only_decl (lower "type Opt a = | None | Some(a)\n")
+  and spaced = only_decl (lower "type Opt a = | None | Some a\n") in
+  Alcotest.(check bool)
+    "Some(a) declares Some a" true
+    (Form.equal_ignoring_meta (Kernel.decl_to_form parenthesized) (Kernel.decl_to_form spaced));
+  has_code "E1225" "type Bad a = | Some()\n"
 
 let test_effect_declarations () =
   let declaration =
@@ -404,7 +410,7 @@ let test_ordered_bare_expressions () =
 let test_declaration_recovery () =
   let legacy_cases =
     [
-      "type Bad = | Some(a)\nlater = 1\n";
+      "type Bad = | Some()\nlater = 1\n";
       "once effect Bad where {\n  op : () -> T\nlater = 1\n";
       "once effect Bad where {\n  broken = 0\n}\nlater = 1\n";
     ]

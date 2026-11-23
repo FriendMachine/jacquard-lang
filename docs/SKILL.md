@@ -225,6 +225,26 @@ Reserved words are `type`, `effect`, `once`, `multi`, `fn`, `let`, `rec`,
 `else`, `as`, `where`, `forall`, `jqd`, `try`, and `with`. `opaque` is a
 contextual keyword, special only before a top-level `type`.
 
+Common first-draft mistakes, with the form Jacquard expects:
+
+- Comparisons and logic are named functions: `eq(a, b)` compares Ints,
+  `int.lt?(a, b)`, `text.eq?(a, b)`, `bool.not(x)`, `bool.and(x, y)`. There
+  is no `==`, `<`, `not`, `and`, or `or`. `int.eq` and `int.show` are
+  dictionaries for functions such as `list.contains?(xs, x, int.eq)`, not
+  functions; `text.from-int(n)` renders an Int.
+- Tuples have no `.0`/`.1` access: destructure with `let (a, b) = pair` or
+  `match pair { | (a, b) -> ... }`.
+- An operation clause names its continuation with `resume`, and the clause
+  continues by calling it: `| ask(q) resume k -> k("yes")`, never `resume(k, v)`.
+- A return clause binds the handled result with a plain name:
+  `| return x -> ...`. In a pattern, `(x)` is a one-element tuple, so
+  `| return(x) -> ...` matches something else.
+- A constructor's positional fields may be written `Pair(Int, Text)` or
+  `Pair Int Text`; labeled fields are `Pair(left: Int, right: Text)`. A
+  constructor pattern binds every field: `Pair(a, b)`.
+- Reserved words such as `rec`, `type`, and `effect` cannot name values; rename
+  the binder.
+
 ### Values, Calls, And Definitions
 
 Calls are uncurried. A function declared with two parameters is called with

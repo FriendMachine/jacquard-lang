@@ -835,7 +835,7 @@ let test_malformed_declaration_poisons_only_its_dependents () =
     analyze ~file:"cascade.jac"
       "type Shape = | Circle Int\n\
        area(s) = match s { | Circle(r) -> mul(r, r) }\n\
-       type World = | World(Int, Text)\n\
+       type World = | World(Int, Text\n\
        describe(w) = match w { | World(n, t) -> t }\n\
        total(a, b) = add(area(a), area(b))\n\
        oops(x) = add(x, missing-name)\n\
@@ -850,8 +850,8 @@ let test_malformed_declaration_poisons_only_its_dependents () =
          Diag.code_or_uncoded diagnostic = "E0301"
          && Resolve.unknown_name_of diagnostic = Some "missing-name")
        report.Surface_check.diagnostics);
-  (* the parenthesised positional declaration is a syntax error with an unambiguous meaning, so
-     recovery keeps its constructor for `describe` rather than manufacturing a second error *)
+  (* the unclosed field list has an unambiguous meaning, so recovery keeps the constructor for
+     `describe` rather than manufacturing a second error *)
   Alcotest.(check (list string))
     "declarations around the malformed one still check"
     [ "area"; "describe"; "total"; "later" ]
@@ -916,7 +916,7 @@ let test_malformed_declaration_poisons_only_its_dependents () =
       \  ping : (value: Int) -> Int\n\
        }\n\
        call(n) = ping(value: n)\n\
-       type Bad = | Bad(Int)\n"
+       type Bad = | Bad()\n"
   in
   Alcotest.(check (list string))
     "a labeled call of a recovered operation resolves" [ "E1225" ] (codes labeled_operation);
@@ -935,7 +935,7 @@ let test_malformed_declaration_poisons_only_its_dependents () =
        (analyze ~file:"abi.jac"
           "once effect Ping where { ping : (value: Int) -> Int }\n\
            once effect Ping where { ping : (other: Int) -> Int }\n\
-           type Bad = | Bad(Int)\n"));
+           type Bad = | Bad()\n"));
   (* a named call into a poisoned declaration is a consequence too, so the independent missing
      name beside it is the one reported *)
   Alcotest.(check (list string))

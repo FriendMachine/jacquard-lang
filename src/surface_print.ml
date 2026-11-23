@@ -1547,8 +1547,33 @@ let pp_constructor ?(leading = true) context lookup fmt (constructor : Kernel.co
   if leading then pp_leading context constructor.kmeta fmt;
   Format.fprintf fmt "@[<hv 2>";
   pp_named Surface_name.Con fmt constructor.con_name;
+  (* DX.8: `C (List Text) Int` would read back as the parenthesized field list `C(List Text) Int`,
+     so positional fields whose first field prints in parentheses use the `C(T1, T2)` form *)
+  let first_field_parenthesized =
+    match constructor.fields with
+    | { Kernel.label = None; fty; _ } :: _ ->
+        let printed =
+          Format.asprintf "%a" (pp_ty_atom { context with trivia = false } lookup) fty
+        in
+        String.length printed > 0 && printed.[0] = '('
+    | _ -> false
+  in
+  (* comments written inside a parenthesized field list stay inside it *)
+  let commented_field_list =
+    let params_meta = Meta.surface_container "params" constructor.kmeta in
+    context.trivia
+    && (not (Meta.is_empty params_meta))
+    && (meta_tree_has_comments params_meta
+       || List.exists
+            (fun (field : Kernel.field) ->
+              meta_tree_has_comments field.fmeta || type_owns_comments field.fty)
+            constructor.fields)
+  in
   if constructor.fields <> [] then
-    if List.exists (fun field -> Option.is_some field.Kernel.label) constructor.fields then begin
+    if
+      first_field_parenthesized || commented_field_list
+      || List.exists (fun field -> Option.is_some field.Kernel.label) constructor.fields
+    then begin
       let params_meta = Meta.surface_container "params" constructor.kmeta in
       pp_leading context params_meta fmt;
       Format.fprintf fmt "(%a"

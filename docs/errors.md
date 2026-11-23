@@ -263,7 +263,7 @@ also emits E0817; consuming the captured resumption twice emits E0816.
 | E1222 | reserved pre-SS.9 binding-pattern parser gate; refutable binders now use E0205/E0206 during lowering | `fn (Some) -> 1` |
 | E1223 | missing block-item separator | `{ 1 2 }` instead of `{ 1; 2 }` |
 | E1224 | a term signature is not followed by the same definition | `x : T; x = value` |
-| E1225 | malformed type/effect declaration structure; the positional-parentheses case shows both accepted spellings, and the declarations around it keep their names (see the check command's recovery report) | `type Option a = Some(a)` |
+| E1225 | malformed type/effect declaration structure; the declarations around it keep their names (see the check command's recovery report). `Some(a)` declares a positional field, like `Some a` | `type Unit = U()` |
 | E1226 | malformed handler boundary, clause, or raw inversion escape | `handle match x { ... } { ... }` without the D35 body wrapper |
 | E1227 | surface syntax nesting exceeds the structural limit | more than 10,000 nested calls, pipes, parentheses, patterns, or types |
 | E1230 | surface node is outside the SS.7 local-lowering slice | lowering a list before SS.12 |

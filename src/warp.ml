@@ -31,7 +31,7 @@ let prelude_op ctx op name =
   | Some { Resolve.hash; _ } -> Hash.equal hash op
   | None -> false
 
-let version = "warp-v6"
+let version = "warp-v7"
 
 type verdict = Pass of int | Fail of { soft : string list; hard : string option } | NoChecks
 
@@ -41,6 +41,8 @@ type outcome = {
   note : string option;  (** SKIP/REFUSED annotation *)
   coverage : Hash.t list;
   cached : bool;
+  explored : (int * bool) option;
+      (** TEST.4: executions the case's [explore.*] calls reported, and whether all completed *)
 }
 
 type discovered =
@@ -959,11 +961,16 @@ let verdict_form (verdict : verdict) : Form.t =
 (* one entry per DISCOVERED test: a group's entry (keyed by the group hash, which
    Merkle-covers every member) holds one outcome per member, display included, so a
    cached hit renders exactly what the cold run rendered *)
-let entry_form ~key ~(outcomes : (string * verdict * string option * Hash.t list) list) : Form.t =
+let explored_form (executions, complete) =
+  Form.form "explored" [ Form.Int executions; Form.Sym (if complete then "complete" else "capped") ]
+
+let entry_form ~key
+    ~(outcomes : (string * verdict * string option * Hash.t list * (int * bool) option) list) :
+    Form.t =
   Form.form "test-cache-entry"
     (Form.F (Form.form "key" [ Form.Text key ])
     :: List.map
-         (fun (display, verdict, note, coverage) ->
+         (fun (display, verdict, note, coverage, explored) ->
            Form.F
              (Form.form "outcome"
                 ([
@@ -971,9 +978,12 @@ let entry_form ~key ~(outcomes : (string * verdict * string option * Hash.t list
                    Form.F (Form.form "verdict" [ Form.F (verdict_form verdict) ]);
                    Form.F (Form.form "coverage" (List.map (fun h -> Form.Hash h) coverage));
                  ]
+                @ (match note with
+                  | Some n -> [ Form.F (Form.form "note" [ Form.Text n ]) ]
+                  | None -> [])
                 @
-                match note with
-                | Some n -> [ Form.F (Form.form "note" [ Form.Text n ]) ]
+                match explored with
+                | Some report -> [ Form.F (explored_form report) ]
                 | None -> [])))
          outcomes)
 
@@ -992,7 +1002,7 @@ let verdict_of_form (v : Form.t) : verdict option =
   | _ -> None
 
 let entry_of_form (f : Form.t) :
-    (string * (string * verdict * string option * Hash.t list) list) option =
+    (string * (string * verdict * string option * Hash.t list * (int * bool) option) list) option =
   match f with
   | {
    Form.head = "test-cache-entry";
@@ -1010,18 +1020,34 @@ let entry_of_form (f : Form.t) :
                 :: note_rest;
               _;
             } ->
-            let note =
+            let note, explored_rest =
               match note_rest with
-              | [ Form.F { Form.head = "note"; args = [ Form.Text n ]; _ } ] -> Some n
+              | Form.F { Form.head = "note"; args = [ Form.Text n ]; _ } :: rest -> (Some n, rest)
+              | rest -> (None, rest)
+            in
+            let explored =
+              match explored_rest with
+              | [
+               Form.F
+                 {
+                   Form.head = "explored";
+                   args = [ Form.Int executions; Form.Sym (("complete" | "capped") as state) ];
+                   _;
+                 };
+              ] ->
+                  Some (Some (executions, state = "complete"))
+              | [] -> Some None
               | _ -> None
             in
-            Option.map
-              (fun verdict ->
-                ( display,
-                  verdict,
-                  note,
-                  List.filter_map (function Form.Hash h -> Some h | _ -> None) cov ))
-              (verdict_of_form v)
+            Option.bind explored (fun explored ->
+                Option.map
+                  (fun verdict ->
+                    ( display,
+                      verdict,
+                      note,
+                      List.filter_map (function Form.Hash h -> Some h | _ -> None) cov,
+                      explored ))
+                  (verdict_of_form v))
         | _ -> None
       in
       let outcomes = List.map outcome rest in
@@ -1050,6 +1076,26 @@ let ceiling_budgets : (string * int) list ref = ref []
     alongside the incomplete test and resets this before each test. They are never cached. *)
 let partial_outcomes : outcome list ref = ref []
 
+(* TEST.4: caps the Case and WCase lanes attributed to themselves; a discovered test fails its
+   other outcomes only for caps no case accounts for (one raised while building the test value) *)
+let attributed_caps = ref 0
+
+let capped_failure =
+  "an exploration stopped at its execution limit while this test ran (E0905); a caught failure \
+   still fails the test"
+
+(* fail one case's outcome when a cap happened while it ran, even if the program caught it *)
+let attribute_caps ctx ~caps_before (o : outcome) =
+  let delta = Eval.capped_explorations ctx - caps_before in
+  if delta <= 0 then o
+  else begin
+    attributed_caps := !attributed_caps + delta;
+    match o.verdict with
+    | Some (Pass _ | NoChecks) ->
+        { o with verdict = Some (Fail { soft = []; hard = Some capped_failure }) }
+    | Some (Fail _) | None -> o
+  end
+
 let bounded_key key =
   let key =
     match !fuel_budget with
@@ -1065,7 +1111,8 @@ let bounded_key key =
     (fun key (flag, limit) -> Printf.sprintf "%s|%s=%d" key flag limit)
     key !ceiling_budgets
 
-let cache_lookup ~cache_dir key : (string * verdict * string option * Hash.t list) list option =
+let cache_lookup ~cache_dir key :
+    (string * verdict * string option * Hash.t list * (int * bool) option) list option =
   let key = bounded_key key in
   match cache_dir with
   | None -> None
@@ -1159,12 +1206,24 @@ let rec run_value ctx ~test_run ~prop_mode ~schedule_plan ~suite_seed ~member ~s
               "same under: malformed variation" )
       in
       let (verdict, note), coverage = with_coverage ctx run in
-      Ok [ { display; verdict = Some verdict; note = Some note; coverage; cached = false } ]
+      Ok
+        [
+          {
+            display;
+            verdict = Some verdict;
+            note = Some note;
+            coverage;
+            cached = false;
+            explored = None;
+          };
+        ]
   | Value.VCon { con; name = "case"; args = [ Value.VText label; thunk ]; _ }
     when prelude_con ctx "case" con -> (
       let display = display ^ "/" ^ label in
       let schedule_path = schedule_path @ [ label ] in
-      let run =
+      let caps_before = Eval.capped_explorations ctx in
+      let run, explored =
+        Eval.with_fresh_exploration ctx @@ fun () ->
         match schedule_plan with
         | Default_schedule ->
             Result.map (fun (v, c) -> (v, c, None)) (run_thunk ctx ~test_run thunk)
@@ -1180,7 +1239,11 @@ let rec run_value ctx ~test_run ~prop_mode ~schedule_plan ~suite_seed ~member ~s
       in
       match run with
       | Ok (verdict, coverage, note) ->
-          Ok [ { display; verdict = Some verdict; note; coverage; cached = false } ]
+          Ok
+            [
+              attribute_caps ctx ~caps_before
+                { display; verdict = Some verdict; note; coverage; cached = false; explored };
+            ]
       | Error e -> Error (Printf.sprintf "%s: %s" display e))
   | Value.VCon { con; name = "prop"; args = [ Value.VText label; thunk ]; _ }
     when prelude_con ctx "prop" con -> (
@@ -1192,7 +1255,17 @@ let rec run_value ctx ~test_run ~prop_mode ~schedule_plan ~suite_seed ~member ~s
           in
           match result with
           | Ok (verdict, note) ->
-              Ok [ { display; verdict = Some verdict; note = Some note; coverage; cached = false } ]
+              Ok
+                [
+                  {
+                    display;
+                    verdict = Some verdict;
+                    note = Some note;
+                    coverage;
+                    cached = false;
+                    explored = None;
+                  };
+                ]
           | Error e -> Error (Printf.sprintf "%s: %s" display e))
       | Exhaustive { budget } -> (
           let result, coverage =
@@ -1200,7 +1273,17 @@ let rec run_value ctx ~test_run ~prop_mode ~schedule_plan ~suite_seed ~member ~s
           in
           match result with
           | Ok (verdict, note) ->
-              Ok [ { display; verdict = Some verdict; note = Some note; coverage; cached = false } ]
+              Ok
+                [
+                  {
+                    display;
+                    verdict = Some verdict;
+                    note = Some note;
+                    coverage;
+                    cached = false;
+                    explored = None;
+                  };
+                ]
           | Error d ->
               (* budget refusal: a clean catalogued diagnostic that FAILS the test —
                  partial exhaustiveness must never pose as a proof *)
@@ -1212,6 +1295,7 @@ let rec run_value ctx ~test_run ~prop_mode ~schedule_plan ~suite_seed ~member ~s
                     note = Some "prop: exhaustive refusal";
                     coverage;
                     cached = false;
+                    explored = None;
                   };
                 ]))
   | Value.VCon { con; name = "group"; args = [ Value.VText label; tests ]; _ }
@@ -1243,18 +1327,38 @@ let rec run_value ctx ~test_run ~prop_mode ~schedule_plan ~suite_seed ~member ~s
     when prelude_con ctx "wcase" con -> (
       (* world lane: the caller already verified grants; never cached *)
       let display = display ^ "/" ^ label in
-      match run_thunk ctx ~test_run thunk with
-      | Ok (verdict, coverage) ->
-          Ok [ { display; verdict = Some verdict; note = None; coverage; cached = false } ]
-      | Error e -> Error (Printf.sprintf "%s: %s" display e))
+      let caps_before = Eval.capped_explorations ctx in
+      match Eval.with_fresh_exploration ctx (fun () -> run_thunk ctx ~test_run thunk) with
+      | Ok (verdict, coverage), explored ->
+          Ok
+            [
+              attribute_caps ctx ~caps_before
+                { display; verdict = Some verdict; note = None; coverage; cached = false; explored };
+            ]
+      | Error e, _ -> Error (Printf.sprintf "%s: %s" display e))
   | v -> Error (Printf.sprintf "not a test value: %s" (Value.display v))
 
-(** [run_discovered ctx ~test_run ~suite_seed ~cache_dir ~granted d] executes one discovered test.
-    Hermetic Cases consult the cache by member hash; groups cache as a unit under the group's member
-    hash. Relational cases add their variation/mode and leaf-derived seeds. World tests check grant
-    coverage and remain uncached. *)
+(* the discovered test's caps not attributed to one of its cases fail all its passing outcomes;
+   any cap at all keeps the test out of the cache *)
+let taint_capped ctx ~caps_before ~attributed_before outcomes =
+  let caps = Eval.capped_explorations ctx - caps_before in
+  let unattributed = caps - (!attributed_caps - attributed_before) in
+  let outcomes =
+    if unattributed <= 0 then outcomes
+    else
+      List.map
+        (fun o ->
+          match o.verdict with
+          | Some (Pass _ | NoChecks) ->
+              { o with verdict = Some (Fail { soft = []; hard = Some capped_failure }) }
+          | Some (Fail _) | None -> o)
+        outcomes
+  in
+  (outcomes, caps > 0)
+
 let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~suite_seed ~cache_dir
     ~(granted : Hash.t list) (d : discovered) : (outcome list, string) result =
+  let caps_before = Eval.capped_explorations ctx and attributed_before = !attributed_caps in
   match d with
   | Hermetic (name, h) -> (
       match value_of ctx h with
@@ -1282,7 +1386,7 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
             match (schedule_plan, cached) with
             | Seeded_schedules _, Some stored
               when List.exists
-                     (fun (_, verdict, _, _) -> match verdict with Fail _ -> true | _ -> false)
+                     (fun (_, verdict, _, _, _) -> match verdict with Fail _ -> true | _ -> false)
                      stored ->
                 None
             | _, cached -> cached
@@ -1298,13 +1402,14 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
               in
               Ok
                 (List.map
-                   (fun (display, verdict, note, coverage) ->
+                   (fun (display, verdict, note, coverage, explored) ->
                      {
                        display = current_display display;
                        verdict = Some verdict;
                        note;
                        coverage;
                        cached = true;
+                       explored;
                      })
                    stored)
           | None -> (
@@ -1314,9 +1419,14 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
               with
               | Error e -> Error e
               | Ok outcomes ->
+                  let outcomes, tainted =
+                    taint_capped ctx ~caps_before ~attributed_before outcomes
+                  in
                   (* every EXECUTED outcome caches, display and note included, keyed by
                      this test's member hash (a group hash Merkle-covers its members) *)
                   let cacheable =
+                    (not tainted)
+                    &&
                     match schedule_plan with
                     | Default_schedule -> List.for_all (fun o -> o.verdict <> None) outcomes
                     | Seeded_schedules _ ->
@@ -1330,7 +1440,8 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
                   if cacheable && outcomes <> [] then
                     cache_store ~cache_dir key
                       (List.map
-                         (fun o -> (o.display, Option.get o.verdict, o.note, o.coverage))
+                         (fun o ->
+                           (o.display, Option.get o.verdict, o.note, o.coverage, o.explored))
                          outcomes);
                   Ok outcomes)))
   | Relational (name, h) -> (
@@ -1352,13 +1463,14 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
                   in
                   Ok
                     (List.map
-                       (fun (display, verdict, note, coverage) ->
+                       (fun (display, verdict, note, coverage, explored) ->
                          {
                            display = current_display display;
                            verdict = Some verdict;
                            note;
                            coverage;
                            cached = true;
+                           explored;
                          })
                        stored)
               | None -> (
@@ -1368,8 +1480,11 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
                   with
                   | Error error -> Error error
                   | Ok outcomes ->
+                      let outcomes, tainted =
+                        taint_capped ctx ~caps_before ~attributed_before outcomes
+                      in
                       if
-                        outcomes <> []
+                        (not tainted) && outcomes <> []
                         && List.for_all (fun outcome -> outcome.verdict <> None) outcomes
                       then
                         cache_store ~cache_dir key
@@ -1378,7 +1493,8 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
                                ( outcome.display,
                                  Option.get outcome.verdict,
                                  outcome.note,
-                                 outcome.coverage ))
+                                 outcome.coverage,
+                                 outcome.explored ))
                              outcomes);
                       Ok outcomes))))
   | World (name, h) ->
@@ -1402,20 +1518,30 @@ let run_discovered ctx (cctx : Check.ctx) ~test_run ~prop_mode ~schedule_plan ~s
               note = Some (Printf.sprintf "refused: requires --allow %s" (String.concat "," names));
               coverage = [];
               cached = false;
+              explored = None;
             };
           ]
       else
         Result.bind
           (Result.map_error Runtime_err.to_string (value_of ctx h))
           (fun v ->
-            run_value ctx ~test_run ~prop_mode ~schedule_plan:Default_schedule ~suite_seed ~member:h
-              ~schedule_path:[] ~structural_path:[ 0 ] ~display:name v)
+            Result.map
+              (fun outcomes -> fst (taint_capped ctx ~caps_before ~attributed_before outcomes))
+              (run_value ctx ~test_run ~prop_mode ~schedule_plan:Default_schedule ~suite_seed
+                 ~member:h ~schedule_path:[] ~structural_path:[ 0 ] ~display:name v))
 
 (* --- rendering --- *)
 
 let run_discovered ctx cctx ~test_run ~prop_mode ~schedule_plan ~suite_seed ~cache_dir ~granted d =
   guard_fuel_string ctx (fun () ->
       run_discovered ctx cctx ~test_run ~prop_mode ~schedule_plan ~suite_seed ~cache_dir ~granted d)
+
+let explored_detail = function
+  | None -> ""
+  | Some (executions, complete) ->
+      Printf.sprintf ", %d execution%s %s" executions
+        (if executions = 1 then "" else "s")
+        (if complete then "explored, complete" else "explored, incomplete")
 
 let render_outcome (t : totals) (o : outcome) : string list =
   match (o.verdict, o.note) with
@@ -1433,7 +1559,7 @@ let render_outcome (t : totals) (o : outcome) : string list =
         | None -> Printf.sprintf "%d check%s" n (if n = 1 then "" else "s")
       in
       [
-        Printf.sprintf "PASS %s (%s)%s" o.display detail
+        Printf.sprintf "PASS %s (%s%s)%s" o.display detail (explored_detail o.explored)
           (if o.cached then if proof then " [cached proof]" else " [cached]" else "");
       ]
   | Some NoChecks, _ ->
@@ -1446,7 +1572,12 @@ let render_outcome (t : totals) (o : outcome) : string list =
       t.failed <- t.failed + 1;
       if o.cached then t.hits <- t.hits + 1 else t.ran <- t.ran + 1;
       Printf.sprintf "FAIL %s%s%s" o.display
-        (match note with Some n -> " (" ^ n ^ ")" | None -> "")
+        (match (note, o.explored) with
+        | Some n, explored -> " (" ^ n ^ explored_detail explored ^ ")"
+        | None, Some _ ->
+            let detail = explored_detail o.explored in
+            " (" ^ String.sub detail 2 (String.length detail - 2) ^ ")"
+        | None, None -> "")
         (if o.cached then " [cached]" else "")
       :: List.map (fun l -> "  - " ^ l) soft
       @

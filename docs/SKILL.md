@@ -991,6 +991,13 @@ format, or ordinary term-rename-only edit reruns zero tests. A canonical
 dependency-content edit reruns affected dependents. Use `--no-cache` for
 demonstrations and a fixed `--seed` for repeatable sampled properties.
 
+
+To check failure handling exhaustively, explore every outcome of your own effect: write a
+forwarding handler that answers each operation with `explore.branch(site, [outcome, ...])` and pass
+the code under test to `explore.all`, which returns one `(value, path)` per execution;
+`jacquard test` prints how many executions each case explored and whether exploration was
+complete (see docs/warp-testing.md, "Exploring every outcome of your own effect").
+
 ## Identity, Formatting, And Review
 
 `jac hash` computes `HASH_V0` over canonical structure. It erases metadata,

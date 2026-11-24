@@ -332,6 +332,19 @@ val invocation_active : ctx -> bool
 val set_coverage_tracking : ctx -> bool -> unit
 (** [set_coverage_tracking ctx enabled] enables or disables term-reference coverage bookkeeping. *)
 
+val note_exploration : ctx -> executions:int -> complete:bool -> unit
+(** [note_exploration ctx ~executions ~complete] records one exploration in the current scope
+    (WARP.1): executions sum; the scope is complete only while every report is. *)
+
+val capped_explorations : ctx -> int
+(** [capped_explorations ctx] counts the explorations that stopped at their limit during the run of
+    [ctx], including ones whose failure a program caught. *)
+
+val with_fresh_exploration : ctx -> (unit -> 'a) -> 'a * (int * bool) option
+(** [with_fresh_exploration ctx f] runs [f] in a fresh exploration scope and returns the summed
+    [(executions, complete)] it recorded, or [None] when it explored nothing. The enclosing scope is
+    restored, unchanged, even when [f] raises. *)
+
 val with_fresh_coverage : ctx -> (unit -> 'a) -> 'a * Hash.t list
 (** [with_fresh_coverage ctx f] runs [f] with isolated coverage, merges it into the enclosing set,
     restores the enclosing set even if [f] raises, and returns [f]'s result plus covered hashes. *)

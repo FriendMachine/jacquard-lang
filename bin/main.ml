@@ -1772,7 +1772,15 @@ let run_suite ?fuel ?alloc ?(ceilings = (None, None, None)) ~store ~ctx ~cctx ~a
                  in
                  List.iter print_endline
                    (Warp.coverage_report store ~rings ~tests:test_hashes union));
-              if totals.Warp.failed > 0 then exit_diags
+              (* TEST.4: a capped exploration anywhere in the run fails it, even one whose
+                 failure a program caught before any test could see it (a memoised value) *)
+              let capped = Eval.capped_explorations ctx in
+              if capped > 0 then
+                Printf.printf
+                  "FAIL %d exploration%s stopped at the execution limit during this run (E0905)\n"
+                  capped
+                  (if capped = 1 then "" else "s");
+              if totals.Warp.failed > 0 || capped > 0 then exit_diags
               else if totals.Warp.incomplete > 0 then exit_runtime
               else ok))
 

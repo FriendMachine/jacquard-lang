@@ -228,6 +228,14 @@ type ctx = {
       (** coverage bookkeeping costs a hash-keyed table write per term reference — measured ~12% of
           a pure-recursion run (PF.2 phase 2). The run path never reads coverage, so the CLI turns
           tracking off there; the test runner (which reads it) leaves it on. *)
+  mutable capped_explorations : int;
+      (** explorations that stopped at their limit during this whole run, counted even when the
+          failure they raise is caught (a task's [failed] value); the test runner fails the test and
+          the run on any increase *)
+  mutable explored : (int * bool) option;
+      (** WARP.1/TEST.4: executions the prelude's [explore.*] combinators reported in this scope and
+          whether every one completed; [None] when nothing explored. The test runner reads it per
+          test case ({!with_fresh_exploration}). *)
   mutable coverage : (Hash.t, unit) Hashtbl.t;
       (** semantic coverage (W6.8): every store TERM loaded through {!eval_ref} this run — populated
           on the memo-hit path too, so a second test exercising a term still counts it. The test
@@ -322,6 +330,8 @@ let make_ctx store =
     code_resolver = None;
     term_guard = None;
     track_coverage = true;
+    explored = None;
+    capped_explorations = 0;
     coverage = Hashtbl.create 64;
     recovery_immutable_clean = Physical_cache.create 128;
     recovery_static_clean = Physical_cache.create 128;
@@ -764,6 +774,34 @@ let with_fresh_coverage ctx f =
       f
   in
   (result, Hashtbl.fold (fun hash () hashes -> hash :: hashes) mine [])
+
+(** [note_exploration ctx ~executions ~complete] adds one exploration's report to the current scope:
+    executions sum, and the scope is complete only while every report is. *)
+let note_exploration ctx ~executions ~complete =
+  if not complete then ctx.capped_explorations <- ctx.capped_explorations + 1;
+  ctx.explored <-
+    Some
+      (match ctx.explored with
+      | None -> (executions, complete)
+      | Some (n, all_complete) -> (n + executions, all_complete && complete))
+
+(** [capped_explorations ctx] counts the explorations that stopped at their limit in this run. *)
+let capped_explorations ctx = ctx.capped_explorations
+
+(** [with_fresh_exploration ctx f] runs [f] in a fresh exploration scope and returns its reports
+    alongside [f]'s result; the enclosing scope is restored (and receives nothing) even when [f]
+    raises. *)
+let with_fresh_exploration ctx f =
+  let outer = ctx.explored in
+  ctx.explored <- None;
+  match f () with
+  | result ->
+      let mine = ctx.explored in
+      ctx.explored <- outer;
+      (result, mine)
+  | exception exn ->
+      ctx.explored <- outer;
+      raise exn
 
 (* Internal control flow only; never escapes this module. *)
 exception Rt of Runtime_err.t

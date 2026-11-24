@@ -194,6 +194,10 @@ let load ~dir store : ((string * Canon.decl_hashes list) list, Diag.t list) resu
               "throw-ref-opaque";
               "emit-ref-opaque";
               "instance.fresh-v0";
+              (* WARP.1: the runner's exploration report and the combinator's helpers *)
+              "explore.note-v0";
+              "explore.each-v0";
+              "explore.run-v0";
               "instance.same-v0";
             ];
           let bind_operation_alias effect_name operation_name alias =
@@ -630,6 +634,29 @@ let wire_builtins (ctx : Eval.ctx) : (unit, Diag.t list) result =
           Ok (vbool (Instance_token.same left right))
       | [ _; _ ] -> Ok (vbool false)
       | args -> type_err "instance.same-v0" args);
+  optional_internal "explore.note-v0" (fun args ->
+      match args with
+      | [ Value.VInt executions; Value.VCon { name = "true"; _ } ] ->
+          Eval.note_exploration ctx ~executions ~complete:true;
+          Ok (Value.VTuple [])
+      | [ Value.VInt executions; Value.VCon { name = "false"; _ } ] ->
+          (* an exploration that stopped at its limit proves nothing about the executions it
+             skipped: it is a runtime failure wherever it runs, and the test runner also fails the
+             test and the run that saw it, even if the program caught the failure *)
+          Eval.note_exploration ctx ~executions ~complete:false;
+          Error
+            (Runtime_err.Diagnostic
+               (Diag.error ~domain:Warp ~code:"E0905"
+                  ~summary:"An exploration stopped at its execution limit."
+                  ~cause:
+                    (Printf.sprintf
+                       "explore stopped after %d execution%s, before every outcome was explored"
+                       executions
+                       (if executions = 1 then "" else "s"))
+                  ~next_step:
+                    "Raise the limit with explore.up-to(limit, thunk), or explore fewer outcomes."
+                  ~contrast:None ()))
+      | args -> type_err "explore.note-v0" args);
   optional_internal "governance.fresh-audit-run-id" (fun args ->
       match args with
       | [] -> Ok (Value.VHash (Eval.fresh_audit_run_id ctx))
@@ -1837,6 +1864,7 @@ and base_builtin_signatures (store : Store.t) : ((Hash.t * Types.scheme) list, D
           optional_sig "governance.resolve-operation-id" (fn [ text ] (result text hash))
           @ optional_sig "governance.effect-order-key" (fn [ hash ] text)
           @ hidden "governance.fresh-audit-run-id" (fn [] hash)
+          @ hidden "explore.note-v0" (fn [ int_ty; bool_ty ] (Types.TTuple []))
           @ hidden "governance.require-audit-run-id" (fn [ hash; hash ] (Types.TTuple []))
         in
         Ok (base @ code_sigs @ governance_sigs)

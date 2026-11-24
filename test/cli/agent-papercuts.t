@@ -66,8 +66,8 @@ A parameter named like a constructor binds by intent; a match arm still warns.
   1
 
 Hints stay out of places where their advice would be wrong: a constructor declaration with a stray
-`:`, a user's own `add`, and a user type named `Show` get the plain messages; `!=`, `<=` and `//`
-get their own.
+`:`, a user's own `add`, a user type named `Show`, `=>` and a `/* */` comment get the plain
+messages; `!=` and `//` get their own.
 
   $ printf 'type T = | A : Int\n' > colon.jac
   $ jacquard check colon.jac > colon.out 2>&1; echo "exit:$?"
@@ -97,3 +97,15 @@ get their own.
   exit:1
   $ grep -c "comments start with" slash.out
   1
+  $ printf 'f(x) = match x { | 1 => 2 | _ => 3 }\n' > fat.jac
+  $ jacquard check fat.jac > fat.out 2>&1; echo "exit:$?"
+  exit:1
+  $ grep -c "comparison" fat.out
+  0
+  [1]
+  $ printf 'x = 1 /* note */\n' > block.jac
+  $ jacquard check block.jac > block.out 2>&1; echo "exit:$?"
+  exit:1
+  $ grep -c "arithmetic" block.out
+  0
+  [1]

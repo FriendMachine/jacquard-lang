@@ -633,12 +633,7 @@ let next_regular state =
             "; there is no `!=`: write `bool.not(eq(a, b))` for Ints or `bool.not(text.eq?(a, b))` \
              for Text"
         | '!' -> "; there is no `!` operator: write `bool.not(x)`"
-        | '<' | '>' ->
-            "; there are no comparison operators: write `int.lt?(a, b)`, `int.lte?(a, b)`, \
-             `int.gt?(a, b)` or `int.gte?(a, b)` (`real.lt?` and the others for Real)"
         | '/' when peek state = Some '/' -> "; comments start with `--`"
-        | '*' | '/' | '%' ->
-            "; arithmetic is named, not infix: `int.mul(a, b)`, `int.div(a, b)`, `mod(a, b)`"
         | _ -> ""
       in
       fail state start_pos "E1210" (Printf.sprintf "unexpected surface character `%c`%s" char hint)

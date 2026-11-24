@@ -17,9 +17,8 @@ by name cannot, and used to refuse it late without naming the other declaration.
   ok
   exit:0
 
-A record field `charge` does not collide: its accessor is `order.charge`. A type and its own
-constructor sharing a name is one declaration. A type and an effect sharing a name is outside
-the warning's scope (a host that binds by name alone may still refuse it).
+A record field `charge` does not collide: its accessor is `order.charge`. These declarations
+raise no W0302 (a host that binds by name alone may still refuse some of them).
 
   $ cat > fine.jac <<'EOF'
   > type Wrapper = | Wrapper Text

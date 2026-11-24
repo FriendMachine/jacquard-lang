@@ -348,7 +348,7 @@ end
 
 (* DX.7: one source binding a store name in several kinds. The language keeps kinds apart, but a
    host that binds a program by name (jacquard-host's prepare) cannot, and refuses it late and
-   without naming the other declaration. [check] warns where the second declaration is made. *)
+   without naming the other declaration. [check] warns at each later declaration involved. *)
 let declared_names (declaration : Kernel.decl) : (string * Resolve.nkind) list =
   match declaration.Kernel.it with
   | Kernel.DefTerm bindings ->
@@ -370,10 +370,10 @@ let describe_binding (name, kind) =
   let word, surface_kind = kind_words kind in
   Printf.sprintf "%s `%s`" word (Surface_name.render surface_kind name)
 
-(** [name_collisions store ~local declaration] warns (W0302) for each name [declaration] binds that
-    an earlier declaration of this source ([local]) binds in another kind. A collision with a
-    prelude name is not reported: common words (`result`, `report`) would warn on most programs, and
-    a host should tell kinds apart itself. *)
+(** [name_collisions store ~local declaration] warns (W0302), once per name, when [declaration]
+    binds a name that an earlier declaration of this source ([local]) binds in another kind (a type
+    and an effect sharing a name excepted), naming the latest such declaration of each kind. The
+    warning is a hint for name-binding hosts, whose refusal rule is broader. *)
 let name_collisions store ~local (declaration : Kernel.decl) =
   let kinds = [ Resolve.KTerm; Resolve.KCon; Resolve.KOp; Resolve.KType; Resolve.KEffect ] in
   let declared = declared_names declaration in

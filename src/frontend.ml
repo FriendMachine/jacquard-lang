@@ -389,10 +389,12 @@ let name_collisions store ~local (declaration : Kernel.decl) =
               [ (Resolve.KType, Resolve.KEffect); (Resolve.KEffect, Resolve.KType) ])
           own
       in
+      (* an earlier binding in kind [other] collides when this declaration binds the name in
+         some other kind (not counting the type/effect pair) *)
       let others =
         List.filter
           (fun other ->
-            (not (List.mem other own))
+            List.exists (fun kind -> kind <> other) own
             && (not (type_effect_pair other))
             && Hashtbl.mem local (name, other)
             && Option.is_some (Store.lookup_kind store name other))

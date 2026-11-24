@@ -1,6 +1,7 @@
-`jacquard check` warns when one source binds a store name in several kinds (DX.7). The
-language keeps a term, constructor, operation and type apart, but a host that binds a program
-by name cannot, and used to refuse it late without naming the other declaration.
+`jacquard check` warns (W0302, DX.7) at a declaration that binds a store name an earlier
+declaration of the same source binds in another kind. The language keeps a term, constructor,
+operation and type apart, but a host that binds a program by name cannot, and refuses it late
+without naming the other declaration.
 
   $ export JACQUARD_PRELUDE=../../prelude
   $ cat > shop.jac <<'EOF'
@@ -48,3 +49,12 @@ A declaration that binds the name twice (a type and its constructor) gets one wa
   1
   $ sed -n 2p once.out
     Cause: type `Charge` and constructor `Charge` share the store name `charge` with operation `charge` at once.jac:1:1-3:2; the language keeps the kinds apart, but a host that binds the program by name (such as jacquard-host) refuses it
+
+A declaration that binds the name in two kinds is checked against each: an earlier constructor
+`Seen` collides with the new type `Seen`.
+
+  $ printf 'type A = | Seen\ntype Seen = | Seen\n' > seen.jac
+  $ jacquard check seen.jac > seen.out 2>&1; echo "exit:$?"
+  exit:0
+  $ sed -n 2p seen.out
+    Cause: type `Seen` and constructor `Seen` share the store name `seen` with constructor `Seen` at seen.jac:1:1-16; the language keeps the kinds apart, but a host that binds the program by name (such as jacquard-host) refuses it

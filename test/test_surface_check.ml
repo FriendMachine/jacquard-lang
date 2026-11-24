@@ -950,13 +950,14 @@ let test_malformed_declaration_poisons_only_its_dependents () =
      named-call mistake stays reported *)
   Alcotest.(check (list string))
     "a local parameter sharing a poisoned name keeps its genuine E0309"
-    [ "E1225"; "W1201"; "E0309" ]
+    (* DOC.5: a bare-name parameter binds by intent, so W1201 is no longer raised for it *)
+    [ "E1225"; "E0309" ]
     (codes
        (analyze ~file:"local-callee.jac"
           "type Broken = | Ghost(field:\nboundary = 1\nf(ghost) = ghost(field: 1)\n"));
   (* a constructor reference is not shadowed by a same-spelled local, so it stays a consequence *)
   Alcotest.(check (list string))
-    "a constructor call beside a same-spelled local is still a consequence" [ "E1225"; "W1201" ]
+    "a constructor call beside a same-spelled local is still a consequence" [ "E1225" ]
     (codes
        (analyze ~file:"con-beside-local.jac"
           "type Broken = | Ghost(field:\nboundary = 1\nf(ghost) = Ghost(field: 1)\n"));

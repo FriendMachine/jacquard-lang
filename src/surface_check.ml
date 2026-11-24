@@ -404,8 +404,13 @@ let rec lint_pat names constructors (pattern : Surface_ast.pat) =
   in
   here @ nested
 
+(* DOC.5: a parameter that is a bare name binds by intent (`f(done)` beside a constructor `Done`), so
+   W1201 is not raised for it; nested parameter patterns are linted as match patterns are *)
+and lint_param names constructors (pattern : Surface_ast.pat) =
+  match pattern.it with Surface_ast.PBind _ -> [] | _ -> lint_pat names constructors pattern
+
 let rec lint_expr names constructors (expression : Surface_ast.expr) =
-  let pats patterns = List.concat_map (lint_pat names constructors) patterns in
+  let pats patterns = List.concat_map (lint_param names constructors) patterns in
   let exprs expressions = List.concat_map (lint_expr names constructors) expressions in
   match expression.it with
   | Surface_ast.Lit _ | Surface_ast.Name _ | Surface_ast.HashRef _ | Surface_ast.GroupRef _
@@ -460,7 +465,7 @@ and lint_block_item names constructors = function
   | Surface_ast.Expr expression -> lint_expr names constructors expression
   | Surface_ast.Let binding ->
       lint_pat names constructors binding.binder
-      @ List.concat_map (lint_pat names constructors) binding.params
+      @ List.concat_map (lint_param names constructors) binding.params
       @ lint_expr names constructors binding.value
   | Surface_ast.Try item ->
       Option.fold ~none:[] ~some:(lint_pat names constructors) item.binder
@@ -469,7 +474,7 @@ and lint_block_item names constructors = function
 let lint_top names constructors (top : Surface_ast.top) =
   match top.it with
   | Surface_ast.Definition { params; value; _ } ->
-      List.concat_map (lint_pat names constructors) params @ lint_expr names constructors value
+      List.concat_map (lint_param names constructors) params @ lint_expr names constructors value
   | Surface_ast.TopExpr expression -> lint_expr names constructors expression
   | Surface_ast.Signature (_, annotation) -> long_quantifier_prefix_warnings annotation
   | Surface_ast.TypeDecl { name; vars; opaque; constructors } ->

@@ -227,11 +227,16 @@ contextual keyword, special only before a top-level `type`.
 
 Common first-draft mistakes, with the form Jacquard expects:
 
-- Comparisons and logic are named functions: `eq(a, b)` compares Ints,
-  `int.lt?(a, b)`, `text.eq?(a, b)`, `bool.not(x)`, `bool.and(x, y)`. There
-  is no `==`, `<`, `not`, `and`, or `or`. `int.eq` and `int.show` are
-  dictionaries for functions such as `list.contains?(xs, x, int.eq)`, not
-  functions; `text.from-int(n)` renders an Int.
+- Comparisons and logic are named functions: `eq(a, b)` compares Ints only,
+  `text.eq?(a, b)` compares Text, `int.lt?(a, b)`, `bool.not(x)`,
+  `bool.and(x, y)`, `bool.or(x, y)`; `bool.and-then(x, fn () -> y)` and
+  `bool.or-else(x, fn () -> y)` stop early. There is no `==`, `<`, `&&`, `||`,
+  `!`, `not`, `and`, or `or`. `int.eq` and `int.show` are dictionaries for
+  functions such as `list.contains?(xs, x, int.eq)`, not functions;
+  `text.from-int(n)` renders an Int.
+- A type signature is its own line before the definition, and an arrow type
+  always lists its effects, `->{}` for none: `area : (Int, Int) ->{} Int`
+  then `area(w, h) = int.mul(w, h)`; never `area(w, h) : Int = ...`.
 - Tuples have no `.0`/`.1` access: destructure with `let (a, b) = pair` or
   `match pair { | (a, b) -> ... }`.
 - An operation clause names its continuation with `resume`, and the clause
@@ -244,6 +249,28 @@ Common first-draft mistakes, with the form Jacquard expects:
   constructor pattern binds every field: `Pair(a, b)`.
 - Reserved words such as `rec`, `type`, and `effect` cannot name values; rename
   the binder.
+- A parameter named like a constructor (`done` beside `Done`) binds a value; in
+  a match arm a lowercase pattern also binds, so write `Done` to match the
+  constructor.
+
+```jacquard doctest=skill-first-draft mode=check fixture=skill-first-draft.jac stdout=skill-first-draft.stdout stderr=empty exit=0
+type Status = | Done | Pending
+
+area : (Int, Int) ->{} Int
+area(w, h) = int.mul(w, h)
+
+same-name?(a, b) = text.eq?(a, b)
+
+ready?(n, status) = bool.and(int.lt?(0, n), match status { | Done -> True | Pending -> False })
+
+either?(a, b) = bool.or(a, bool.not(b))
+
+listed?(xs, x) = list.contains?(xs, x, int.eq)
+
+label(n) = text.from-int(n)
+
+first(pair) = match pair { | (a, _) -> a }
+```
 
 ### Values, Calls, And Definitions
 

@@ -623,7 +623,19 @@ let next_regular state =
   | Some char ->
       let start_pos = pos state in
       ignore (advance state);
-      fail state start_pos "E1210" (Printf.sprintf "unexpected surface character `%c`" char)
+      let hint =
+        (* DOC.5: the operators agents reach for most when no guide says otherwise *)
+        match char with
+        | '&' ->
+            "; there is no `&&`: write `bool.and(a, b)`, or `bool.and-then(a, fn () -> b)` to stop \
+             early"
+        | '!' -> "; there is no `!` operator: write `bool.not(x)`"
+        | '=' | '<' | '>' | '*' | '/' | '%' ->
+            "; Jacquard has no infix operators except `|>`: compare and compute with named \
+             functions such as `eq(a, b)`, `text.eq?(a, b)`, `int.lt?(a, b)`, `int.mul(a, b)`"
+        | _ -> ""
+      in
+      fail state start_pos "E1210" (Printf.sprintf "unexpected surface character `%c`%s" char hint)
 
 let update_context state ({ token; _ } as located) =
   state.raw_pending <-

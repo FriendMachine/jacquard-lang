@@ -346,6 +346,86 @@ module Checked = struct
           try verify_current t current with Sys_error message -> Error (Unreadable_store message))
 end
 
+(* DX.7: one source binding a store name in several kinds. The language keeps kinds apart, but a
+   host that binds a program by name (jacquard-host's prepare) cannot, and refuses it late and
+   without naming the other declaration. [check] warns at each later declaration involved. *)
+let declared_names (declaration : Kernel.decl) : (string * Resolve.nkind) list =
+  match declaration.Kernel.it with
+  | Kernel.DefTerm bindings ->
+      List.map (fun (b : Kernel.binding) -> (b.bname, Resolve.KTerm)) bindings
+  | Kernel.DefType { tname; cons; _ } ->
+      (tname, Resolve.KType)
+      :: List.map (fun (c : Kernel.conspec) -> (c.con_name, Resolve.KCon)) cons
+  | Kernel.DefEffect { ename; ops; _ } ->
+      (ename, Resolve.KEffect) :: List.map (fun (o : Kernel.opspec) -> (o.op_name, Resolve.KOp)) ops
+
+let kind_words = function
+  | Resolve.KTerm -> ("term", Surface_name.Term)
+  | Resolve.KCon -> ("constructor", Surface_name.Con)
+  | Resolve.KOp -> ("operation", Surface_name.Op)
+  | Resolve.KType -> ("type", Surface_name.Type)
+  | Resolve.KEffect -> ("effect", Surface_name.Effect)
+
+let describe_binding (name, kind) =
+  let word, surface_kind = kind_words kind in
+  Printf.sprintf "%s `%s`" word (Surface_name.render surface_kind name)
+
+(** [name_collisions store ~local declaration] warns (W0302), once per name, when [declaration]
+    binds a name that an earlier declaration of this source ([local]) binds in another kind (a type
+    and an effect sharing a name excepted), naming the latest such declaration of each kind. The
+    warning is a hint for name-binding hosts, whose refusal rule is broader. *)
+let name_collisions store ~local (declaration : Kernel.decl) =
+  let kinds = [ Resolve.KTerm; Resolve.KCon; Resolve.KOp; Resolve.KType; Resolve.KEffect ] in
+  let declared = declared_names declaration in
+  let names = List.sort_uniq String.compare (List.map fst declared) in
+  List.filter_map
+    (fun name ->
+      let own = List.filter_map (fun (n, k) -> if n = name then Some k else None) declared in
+      (* a type and an effect sharing a name is not reported: see the W0302 scope in errors.md *)
+      let type_effect_pair other =
+        List.for_all
+          (fun kind ->
+            List.mem (kind, other)
+              [ (Resolve.KType, Resolve.KEffect); (Resolve.KEffect, Resolve.KType) ])
+          own
+      in
+      (* an earlier binding in kind [other] collides when this declaration binds the name in
+         some other kind (not counting the type/effect pair) *)
+      let others =
+        List.filter
+          (fun other ->
+            List.exists (fun kind -> kind <> other) own
+            && (not (type_effect_pair other))
+            && Hashtbl.mem local (name, other)
+            && Option.is_some (Store.lookup_kind store name other))
+          kinds
+      in
+      match others with
+      | [] -> None
+      | _ ->
+          let where other =
+            match Hashtbl.find_opt local (name, other) with
+            | Some (Some span) ->
+                Printf.sprintf "%s at %s" (describe_binding (name, other)) (Span.to_string span)
+            | Some None | None -> describe_binding (name, other) ^ " in this source"
+          in
+          Some
+            (Diag.warning
+               ?span:(Meta.span declaration.Kernel.meta)
+               ~domain:Resolution ~code:"W0302"
+               ~summary:"A public name is bound by more than one declaration."
+               ~cause:
+                 (Printf.sprintf
+                    "%s %s the store name `%s` with %s; the language keeps the kinds apart, but a \
+                     host that binds the program by name (such as jacquard-host) refuses it"
+                    (String.concat " and "
+                       (List.map (fun kind -> describe_binding (name, kind)) own))
+                    (if List.length own = 1 then "shares" else "share")
+                    name
+                    (String.concat " and " (List.map where others)))
+               ~next_step:"Rename one of the declarations." ~contrast:None ()))
+    names
+
 type recovery = { diagnostics : Diag.t list; signatures : (string * string) list }
 type outcome = Checked of Checked.t | Recovered of recovery
 
@@ -373,7 +453,19 @@ let check ?origin ?(on_parsed = ignore) ?(on_resolved = fun _ _ -> ())
       Ok (Recovered { diagnostics; signatures })
   | None ->
       let checked = ref [] and published = ref [] and awaiting_installation = ref None in
+      let local = Hashtbl.create 16 in
       let on_resolved top resolver_warnings =
+        let collisions =
+          match top with
+          | Kernel.Decl declaration ->
+              let found = name_collisions store ~local declaration in
+              List.iter
+                (fun binding -> Hashtbl.replace local binding (Meta.span declaration.Kernel.meta))
+                (declared_names declaration);
+              found
+          | Kernel.Expr _ -> []
+        in
+        let resolver_warnings = resolver_warnings @ collisions in
         on_resolved top resolver_warnings;
         let* ({ Check.names; row; warnings } as signature) = Check.check_top checker top in
         let entry =

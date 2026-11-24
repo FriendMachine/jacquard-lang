@@ -3792,11 +3792,13 @@ let parse_tokens ?(compose = false) ~source tokens =
         report state token
           (Printf.sprintf "top-level items require a newline or `;`, found %s%s"
              (token_description state token)
-             (match token.Surface_lex.token with
-             | Surface_lex.Colon ->
-                 (* DOC.5: `f(x) : Int = ...` *)
-                 "; a type signature goes on its own line before the definition: `f : (Int) ->{} \
-                  Int` then `f(x) = ...`"
+             (match (token.Surface_lex.token, item.Surface_ast.it) with
+             | ( Surface_lex.Colon,
+                 Surface_ast.TopExpr { it = Surface_ast.Call _ | Surface_ast.Name _; _ } ) ->
+                 (* DOC.5: `f(x) : Int = ...`, read as an expression and then a stray `:` *)
+                 "; a type signature goes on its own line before the definition (`f : (Int) ->{} \
+                  Int` then `f(x) = ...`), and an expression is annotated in parentheses, `(e : \
+                  T)`"
              | _ -> ""));
         synchronize_item state;
         ignore (consume_separators state)

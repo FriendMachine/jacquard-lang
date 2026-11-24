@@ -234,8 +234,8 @@ Common first-draft mistakes, with the form Jacquard expects:
   `!`, `not`, `and`, or `or`. `int.eq` and `int.show` are dictionaries for
   functions such as `list.contains?(xs, x, int.eq)`, not functions;
   `text.from-int(n)` renders an Int.
-- A type signature is its own line before the definition, and an arrow type
-  always lists its effects, `->{}` for none: `area : (Int, Int) ->{} Int`
+- A type signature is its own line before the definition, and a function type
+  in a signature always lists its effects, `->{}` for none: `area : (Int, Int) ->{} Int`
   then `area(w, h) = int.mul(w, h)`; never `area(w, h) : Int = ...`.
 - Tuples have no `.0`/`.1` access: destructure with `let (a, b) = pair` or
   `match pair { | (a, b) -> ... }`.
@@ -1200,8 +1200,10 @@ Do not invent new kernel forms for surface sugar.
 - A local `let rec` whose body performs an effect can fail row inference
   (E0801); annotate the recursive call with its type or use a top-level
   recursive definition.
-- W1201 warns when a parameter is named like a constructor in scope (`job`
-  for `Job`, `allow` for the prelude's `Allow`); rename the parameter.
+- W1201 warns when a lowercase pattern in a match arm, `let` or nested
+  parameter pattern is spelled like a constructor in scope (`job` for `Job`);
+  write the constructor's PascalCase name to match it. A bare-name parameter
+  (`f(job) = ...`) binds by intent and is not flagged.
 
 ## Recommended Agent Workflow
 

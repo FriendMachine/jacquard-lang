@@ -64,3 +64,36 @@ A parameter named like a constructor binds by intent; a match arm still warns.
   1
   $ grep -c "case.jac:3:" case.out
   1
+
+Hints stay out of places where their advice would be wrong: a constructor declaration with a stray
+`:`, a user's own `add`, and a user type named `Show` get the plain messages; `!=`, `<=` and `//`
+get their own.
+
+  $ printf 'type T = | A : Int\n' > colon.jac
+  $ jacquard check colon.jac > colon.out 2>&1; echo "exit:$?"
+  exit:1
+  $ grep -c "signature goes on its own line" colon.out
+  0
+  [1]
+  $ printf 'add(a, b) = bool.and(a, b)\nx = add("x", True)\n' > own-add.jac
+  $ jacquard check own-add.jac > own-add.out 2>&1; echo "exit:$?"
+  exit:1
+  $ grep -c "take Int" own-add.out
+  0
+  [1]
+  $ printf 'type Show = | Show(Int)\nh = Show(1)(2)\n' > own-show.jac
+  $ jacquard check own-show.jac > own-show.out 2>&1; echo "exit:$?"
+  exit:1
+  $ grep -c "dictionary" own-show.out
+  0
+  [1]
+  $ printf 'f(a, b) = a != b\n' > ne.jac
+  $ jacquard check ne.jac > ne.out 2>&1; echo "exit:$?"
+  exit:1
+  $ grep -c "there is no \`!=\`" ne.out
+  1
+  $ printf 'x = 1 // note\n' > slash.jac
+  $ jacquard check slash.jac > slash.out 2>&1; echo "exit:$?"
+  exit:1
+  $ grep -c "comments start with" slash.out
+  1

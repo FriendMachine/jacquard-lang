@@ -1203,8 +1203,9 @@ Do not invent new kernel forms for surface sugar.
   recursive definition.
 - W1201 warns when a lowercase pattern in a match arm, `let` or nested
   parameter pattern is spelled like a constructor in scope (`job` for `Job`);
-  write the constructor's PascalCase name to match it. A bare-name parameter
-  (`f(job) = ...`) binds by intent and is not flagged.
+  write the constructor's PascalCase name to match it. A bare-name function
+  parameter (`f(job) = ...`) binds by intent and is not flagged; an operation
+  clause's parameters are patterns (`| run(Job) resume k` matches), so they are.
 
 ## Recommended Agent Workflow
 

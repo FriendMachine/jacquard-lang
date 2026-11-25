@@ -231,7 +231,7 @@ also emits E0817; consuming the captured resumption twice emits E0816.
 | E1014 | the observation policy cannot apply to both versions: it is pinned to an interface, or lists an operation one version lacks | `--policy` with `interface=<hash>` |
 | E1015 | `--sample` without `--seed` (or the reverse), sampling a List domain, a sample count outside 1..`--max-cases`, or a non-positive `--max-cases` or `--fuel` | `--sample 5` alone |
 | E1016 | `run --record` cannot proceed: the log path exists, `--max-steps` or `--max-bytes` is not positive, the log cannot be written, or a bound was reached (the run stops, exit 2, and the log ends `bounded=`) | `jacquard run m.jac --record m.log --max-steps 1` |
-| E1017 | `test --scaffold` was not given exactly one `.jac` file, the file declares no `multi` effect to explore, or the generated scaffold does not check together with the file (a name it generates is already taken) | `jacquard test --scaffold pure.jac` for a file without effects |
+| E1017 | `test --scaffold` was not given exactly one `.jac` file, the file declares no `multi` effect to explore, or the file and the scaffold do not load and check as `jacquard test` would load them (a top-level expression in the file, or two generated names that coincide, as for `valid?` beside `valid`); the diagnostics that follow say why | `jacquard test --scaffold pure.jac` for a file without effects |
 
 ## Native compilation (E11xx)
 

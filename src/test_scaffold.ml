@@ -107,13 +107,17 @@ let mentions_effect signature eff =
   in
   String.contains signature '{' && go 0
 
-let placeholder ty =
+(* a placeholder argument for a rendered parameter type; a type FILE declares under a prelude
+   type's name renders the same, so it gets none *)
+let placeholder ~types ty =
+  let own name = List.mem_assoc name types in
   match ty with
-  | "Int" -> Some "0"
-  | "Text" -> Some "\"\""
-  | "Bool" -> Some "False"
-  | "Real" -> Some "0.0"
-  | _ when String.length ty >= 5 && String.sub ty 0 5 = "List " -> Some "[]"
+  | "Int" when not (own "int") -> Some "0"
+  | "Text" when not (own "text") -> Some "\"\""
+  | "Bool" when not (own "bool") -> Some "False"
+  | "Real" when not (own "real") -> Some "0.0"
+  | "()" -> Some "()"
+  | _ when String.length ty >= 5 && String.sub ty 0 5 = "List " && not (own "list") -> Some "[]"
   (* a bare type variable: any value instantiates it *)
   | _ when String.length ty > 0 && String.for_all (fun c -> c >= 'a' && c <= 'z') ty -> Some "0"
   | _ -> None
@@ -125,7 +129,9 @@ let generate ~file ~(tops : Surface_ast.top list) ~(signatures : (string * strin
     List.filter_map
       (fun (top : Surface_ast.top) ->
         match top.it with
-        | Surface_ast.TypeDecl { name; constructors; _ } -> Some (name, constructors)
+        (* an opaque type's constructors are sealed to FILE: the scaffold cannot name them *)
+        | Surface_ast.TypeDecl { name; opaque = true; _ } -> Some (name, [])
+        | Surface_ast.TypeDecl { name; constructors; opaque = false; _ } -> Some (name, constructors)
         | _ -> None)
       tops
   in
@@ -222,7 +228,7 @@ let generate ~file ~(tops : Surface_ast.top list) ~(signatures : (string * strin
             line "-- TODO: %s returns a function that performs an effect (%s); write its case." name
               signature
         | Some (params, [ eff ], _) when List.mem eff effect_names ->
-            let args = List.map placeholder params in
+            let args = List.map (placeholder ~types) params in
             if List.exists Option.is_none args then
               line "-- TODO: %s takes arguments the scaffold cannot fill in (%s); write its case."
                 name signature

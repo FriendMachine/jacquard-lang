@@ -373,7 +373,7 @@ a test source to save next to it, then run with `jacquard test FILE.jac FILE-exp
 - for each effect FILE declares without type parameters and with only `multi` operations, an
   `<effect>-world(body)` forwarding handler and an
   `<effect>-runs(thunk)` helper over `explore.all`. An operation returning `Bool`, `()` or a
-  type FILE declares whose constructors take no fields answers with all its outcomes; any
+  non-opaque type FILE declares whose constructors take no fields answers with all its outcomes; any
   other operation answers from a generated `<op>-outcomes() = []` marked TODO (an empty list
   prunes, so the scaffold runs before you fill it in);
 - for each top-level function whose effects are exactly one of those effects, a `Case` that
@@ -386,9 +386,10 @@ A function whose recursion depends on an outcome, such as `walk(n) = if flip() t
 else n`, has executions that never finish, so its Case never completes: set a depth bound in
 the function, or explore it with `explore.up-to` and a small limit.
 
-The output is formatted, and is checked together with FILE before it is printed. A file
-with no `multi` effect, or a scaffold that does not check (a generated name already taken),
-is refused with E1017. Evidence: `test/cli/test-scaffold.t`.
+The output is formatted, and is checked with FILE before it is printed, the way `jacquard test`
+loads the two files. A file with no `multi` effect, or one that `jacquard test` could not load
+with its scaffold (a top-level expression, or two generated names that coincide, as for
+`valid?` beside `valid`), is refused with E1017. Evidence: `test/cli/test-scaffold.t`.
 
 ## 7. The cache, and what CI stops doing
 

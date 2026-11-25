@@ -69,8 +69,7 @@ it is filled in; list parameters get `[]`, and each property is a TODO.
   exit:0
 
 A `once` effect and an entry point with an effect the scaffold does not handle are named in
-comments, and a polymorphic entry point gets a Case like any other; a scaffold whose generated name is already taken is
-refused rather than printed.
+comments, and a polymorphic entry point gets a Case like any other.
 
   $ cat > edge.jac <<'EOF'
   > multi effect Coin where {
@@ -99,10 +98,22 @@ refused rather than printed.
   cache: 0 hit, 2 ran
   exit:0
   $ printf 'coin-world = 3\n' >> edge.jac
-  $ jacquard test --scaffold edge.jac > clash.out 2>&1; echo "exit:$?"
+  $ jacquard test --scaffold edge.jac > edge-explore-test.jac; echo "exit:$?"
+  exit:0
+  $ jacquard test edge.jac edge-explore-test.jac > edge.out; echo "exit:$?"
+  exit:0
+
+The two files load as separate sources, so a FILE name the scaffold also generates does not clash.
+A FILE that `jacquard test` cannot load (a top-level expression) is refused rather than scaffolded.
+
+  $ printf 'multi effect Coin where {\n  flip : () -> Bool\n}\ntwice(n) = if flip() then n else 0\ntwice(2)\n' > expr.jac
+  $ jacquard test --scaffold expr.jac > expr-explore-test.jac 2> expr.err; echo "exit:$?"
   exit:1
-  $ grep -c "E1017\|E0303" clash.out
-  2
+  $ wc -c < expr-explore-test.jac
+  0
+  $ grep -oE "E1017|E1001" expr.err
+  E1017
+  E1001
 
 A file without a `multi` effect, or more than one file, is refused.
 
@@ -137,4 +148,19 @@ Generated names drop a trailing `?` or `!` from the name they are built from.
   PASS heads-explored/heads? on every outcome (TODO: state the property) (1 check, 1 execution explored, complete)
   1 passed, 0 failed, 0 skipped, 0 refused
   cache: 0 hit, 1 ran
+  exit:0
+
+An opaque type's constructors are sealed to its file, so an operation returning one gets a TODO
+outcome list; the scaffold is checked as a second file, as `jacquard test` loads it.
+
+  $ cat > sealed.jac <<'EOF'
+  > opaque type Side = | Heads | Tails
+  > multi effect Coin where { flip : () -> Side }
+  > toss(n) = match flip() { | Heads -> n | Tails -> 0 }
+  > EOF
+  $ jacquard test --scaffold sealed.jac > sealed-explore-test.jac; echo "exit:$?"
+  exit:0
+  $ grep -c "TODO: list the outcomes of flip" sealed-explore-test.jac
+  1
+  $ jacquard test sealed.jac sealed-explore-test.jac > sealed.out; echo "exit:$?"
   exit:0

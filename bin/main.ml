@@ -67,7 +67,9 @@ let diagnostic_summary = function
   | "E1005" -> "Observation policy is invalid or refused"
   | "E1007" -> "Relational runs cannot be called equal"
   | "E1016" -> "Exploration recording cannot proceed"
-  | "E1017" -> "Test scaffold cannot be generated"
+  | "E1017" ->
+      "Pass one .jac file of declarations that checks and declares a `multi` effect; the \
+       diagnostics after this one say what could not be loaded."
   | "E1101" -> "Program is outside the native v1 compilation subset"
   | "E1102" -> "Program requires the interpreter tier"
   | "E1103" -> "Native build could not complete"
@@ -3015,6 +3017,40 @@ let replay_t =
       $ Arg.(value & flag & info [ "compare" ])
       $ prelude_arg)
 
+(* load SOURCES as `jacquard test` loads its files (declarations only, each file its own source)
+   into a fresh store, and check every declaration; nothing runs *)
+let load_as_test_files ~prelude sources =
+  match open_ctx ~prelude ~store_dir:None with
+  | Error ds -> Error ds
+  | Ok (store, _ctx) ->
+      let loaded = ref [] in
+      let load (file, text) =
+        Frontend.walk ~coalesce_names:true ~on_parsed:ignore ~syntax:Auto ~file store text
+          ~before_resolve:(function
+            | Kernel.Expr _ ->
+                Error
+                  [
+                    cli_diagnostic ~code:"E1001"
+                      (Printf.sprintf
+                         "%s: test files hold declarations only; found a top-level expression" file);
+                  ]
+            | Kernel.Decl _ -> Ok ())
+          ~on_installed:(fun d _hashes ->
+            loaded := d :: !loaded;
+            Ok ())
+      in
+      let rec load_all = function
+        | [] -> Ok ()
+        | source :: rest -> Result.bind (load source) (fun () -> load_all rest)
+      in
+      Result.bind (load_all sources) (fun () ->
+          Result.bind (Frontend.make_checker store) (fun cctx ->
+              List.fold_left
+                (fun result d ->
+                  Result.bind result (fun () ->
+                      Result.map ignore (Check.check_top cctx (Kernel.Decl d))))
+                (Ok ()) (List.rev !loaded)))
+
 (* TEST.5: print an exploration-test skeleton for FILE's multi effects; it is formatted and
    checked together with FILE before anything is printed *)
 let scaffold_cmd files prelude =
@@ -3047,19 +3083,22 @@ let scaffold_cmd files prelude =
                   let refuse_with diagnostics =
                     print_diags
                       (cli_diagnostic ~code:"E1017"
-                         "the generated scaffold does not format or check together with the file \
-                          (a name it generates may already be taken); diagnostics follow"
+                         "the file and its scaffold do not load and check as `jacquard test` would \
+                          load them; diagnostics follow"
                       :: diagnostics)
                   in
                   match format_surface_source ~file:scaffold_file text with
                   | Error ds -> refuse_with ds
                   | Ok formatted -> (
-                      match check ~file:scaffold_file (source ^ "\n" ^ formatted) with
-                      | Ok (Frontend.Checked _) ->
+                      (* checked as `jacquard test FILE SCAFFOLD` loads them: two sources in one
+                         store, so FILE's opaque types stay sealed from the scaffold *)
+                      match
+                        load_as_test_files ~prelude [ (file, source); (scaffold_file, formatted) ]
+                      with
+                      | Ok () ->
                           print_string formatted;
                           ok
-                      | Ok (Frontend.Recovered { diagnostics; _ }) | Error diagnostics ->
-                          refuse_with diagnostics)))))
+                      | Error diagnostics -> refuse_with diagnostics)))))
   | [ file ] -> refuse (file ^ " is not a .jac source file")
   | _ -> refuse "--scaffold takes exactly one FILE"
 

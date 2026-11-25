@@ -1,6 +1,6 @@
 ---
 name: jacquard
-description: Install and use Jacquard; write, check, run, format, hash, infer, test, and compile effect-typed, content-addressed .jac programs. Use for Jacquard surface syntax, capability manifests, handlers, discrete Dist models, Code values, Warp tests, canonical identity, replay, and native AOT builds. Topic pages under docs/skill/ cover the full command reference, Code values and grammar, capabilities, Dist, Warp detail, identity and review, and native builds.
+description: Install and use Jacquard; write, check, run, format, hash, infer, test, and compile effect-typed, content-addressed .jac programs. Use for Jacquard surface syntax, capability manifests, handlers, discrete Dist models, Code values, Warp tests, canonical identity, replay, and native AOT builds. Topic pages under docs/skill/ cover the command reference, Code values and grammar, capabilities, Dist, Warp detail, identity and review, and native builds.
 ---
 
 # Jacquard Standalone Guide
@@ -92,11 +92,11 @@ jac fmt PROGRAM.jac
 jac fmt PROGRAM.jac --write
 jac hash PROGRAM.jac
 
-# Everything else is in skill/commands.md:
+# More commands are in skill/commands.md (`jac --help` lists them all):
 #   jac project ...                     local projects (project.jqd)
 #   jac interface ...                   public API identity manifests
 #   jac review run, jac relate          behavior and transcript comparison
-#   jac infer, jac dist-diff            Dist inference (skill/dist.md)
+#   jac infer, jac dist-diff            Dist inference (skill/commands.md)
 #   jac store, diff, replay, tiers      stores and traces (skill/commands.md)
 #   jac audit, governance, why-effect   governed Workspace review (skill/commands.md)
 #   jac build, jac export               native AOT and .jqd export (skill/native-and-carriers.md)
@@ -120,7 +120,7 @@ are:
 Use stderr for diagnostics and stdout for successful program output. Always
 provide an explicit seed for reproducible sampling and property tests.
 
-[skill/commands.md](skill/commands.md) is the full command reference,
+[skill/commands.md](skill/commands.md) is the command reference,
 including what `tiers`, `relate`, `audit`, and `governance` report.
 
 ## Surface Syntax
@@ -760,7 +760,8 @@ resulting row is exactly `{Check}`, it is a hermetic test. `Eval` has no
 in-language hermetic discharger, so eval-dependent behavior belongs in a CLI
 transcript test rather than a Warp unit test.
 
-To check failure handling exhaustively, explore every outcome of your own effect: write a
+To check failure handling exhaustively, explore every outcome of your own effect (it must be
+declared `multi`: exploring resumes each continuation once per outcome): write a
 forwarding handler that answers each operation with `explore.branch(site, [outcome, ...])` and pass
 the code under test to `explore.all`, which returns one `(value, path)` per execution;
 `jacquard test` prints how many executions each case explored and whether exploration was

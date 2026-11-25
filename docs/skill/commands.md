@@ -1,7 +1,8 @@
 # Command Reference
 
-Part of the Jacquard agent guide: every `jac` command and what `tiers`, `relate`,
-`audit`, and `governance` report. Exit codes and everyday use are in [the core guide](../SKILL.md).
+Part of the Jacquard agent guide: the command reference, and what `tiers`, `relate`,
+`audit`, and `governance` report; `jac --help` and `jac COMMAND --help` list every
+command and option. Exit codes and everyday use are in [the core guide](../SKILL.md).
 
 ```sh
 # Check without executing.

@@ -10,8 +10,9 @@ project shape from file names alone.
 - `../AGENTS.md`: operating rules for future agents.
 - `SKILL.md`: the core language and tool guide for coding agents — surface
   syntax, effects and handlers, the standard prelude, everyday commands, the
-  Warp entry point, and gotchas; topic pages are in `skill/`. (Also discoverable as a project skill via `docs/SKILL.md`.)
-- `skill/`: the agent guide's topic pages (full command reference, Code and
+  Warp entry point, and gotchas; topic pages are in `skill/`. (Also
+  discoverable as a project skill via `docs/SKILL.md`.)
+- `skill/`: the agent guide's topic pages (command reference, Code and
   grammar, capabilities, Dist, Warp detail, identity and review,
   native builds), listed in order in `skill/INDEX`.
 - `tutorial.md`: runnable examples from literals through hashing and tooling.

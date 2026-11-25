@@ -133,10 +133,10 @@ it to that.
 ## For Agents
 
 Read `docs/SKILL.md` first. It compresses the syntax, effects and handlers,
-the everyday commands, Warp testing, and the known gotchas into one core page,
-and it loads as a project skill from `docs/SKILL.md`. Topic pages under
-`docs/skill/` hold the full CLI, the prelude, Dist, and other reference
-material. The language is deliberately small enough that an agent with no
+the standard prelude, the everyday commands, Warp testing, and the known
+gotchas into one core page, and it loads as a project skill from
+`docs/SKILL.md`. Topic pages under `docs/skill/` hold the full CLI, Dist,
+capabilities, review and other reference material. The language is deliberately small enough that an agent with no
 Jacquard in its training data can write and test programs from the core page.
 Operating rules are in `AGENTS.md`. What will save you time:
 

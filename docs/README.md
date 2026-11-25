@@ -11,6 +11,9 @@ project shape from file names alone.
 - `SKILL.md`: standalone language and tool guide for coding agents — kernel
   forms, rows and capabilities, Dist, code-as-data, Warp, CLI, style, and
   gotchas. (Also discoverable as a project skill via `docs/SKILL.md`.)
+- `skill/`: the agent guide's topic pages (full command reference, Code and
+  grammar, capabilities, Dist, prelude, Warp detail, identity and review,
+  native builds), listed in order in `skill/INDEX`.
 - `tutorial.md`: runnable examples from literals through hashing and tooling.
 - `../demos/README.md`: demo catalog and what each demo proves.
 - `surface-syntax.md`: public `.jac` authoring syntax and its projection onto

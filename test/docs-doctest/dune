@@ -17,6 +17,14 @@
   ../../docs/concurrency.md
   ../../docs/tutorial.md
   ../../docs/SKILL.md
+  ../../docs/skill/commands.md
+  ../../docs/skill/code-and-grammar.md
+  ../../docs/skill/capabilities-and-host.md
+  ../../docs/skill/dist.md
+  ../../docs/skill/prelude.md
+  ../../docs/skill/warp.md
+  ../../docs/skill/review-and-identity.md
+  ../../docs/skill/native-and-carriers.md
   ../../docs/stdlib.md
   ../../docs/warp-testing.md
   ../../demos/README.md)
@@ -31,6 +39,14 @@
      ../../docs/concurrency.md
      ../../docs/tutorial.md
      ../../docs/SKILL.md
+     ../../docs/skill/commands.md
+     ../../docs/skill/code-and-grammar.md
+     ../../docs/skill/capabilities-and-host.md
+     ../../docs/skill/dist.md
+     ../../docs/skill/prelude.md
+     ../../docs/skill/warp.md
+     ../../docs/skill/review-and-identity.md
+     ../../docs/skill/native-and-carriers.md
      ../../docs/stdlib.md
      ../../docs/warp-testing.md
      ../../demos/README.md)))))

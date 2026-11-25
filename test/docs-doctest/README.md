@@ -2,8 +2,9 @@
 
 The `runtest` rule in this directory audits executable Jacquard examples in
 `README.md`, `docs/effect-membranes.md`, `docs/effect-taxonomy.md`,
-`docs/concurrency.md`, `docs/tutorial.md`, `docs/SKILL.md`, `docs/stdlib.md`,
-`docs/warp-testing.md`, and `demos/README.md`.
+`docs/concurrency.md`, `docs/tutorial.md`, `docs/SKILL.md` and its topic pages
+under `docs/skill/`, `docs/stdlib.md`, `docs/warp-testing.md`, and
+`demos/README.md`.
 
 To add or update an example:
 

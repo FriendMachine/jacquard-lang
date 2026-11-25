@@ -1202,10 +1202,11 @@ Do not invent new kernel forms for surface sugar.
 - A local `let rec` whose body performs an effect can fail row inference
   (E0801); annotate the recursive call with its type or use a top-level
   recursive definition.
-- W1201 warns when a lowercase pattern in a match arm, operation clause, `let`
-  or nested parameter pattern is spelled like a constructor in scope (`job` for
-  `Job`). In a match arm or an operation clause, write the constructor's
-  PascalCase name to match it (`| run(Job) resume k`); elsewhere a pattern cannot
+- W1201 warns when a lowercase pattern in a match arm, operation clause, handler
+  `return` clause, `let` or nested parameter pattern is spelled like a
+  constructor in scope (`job` for `Job`). In a match arm, an operation clause or
+  a `return` clause, write the constructor's PascalCase name to match it
+  (`| run(Job) resume k`); in a `let` or a nested parameter a pattern cannot
   match a constructor, so rename the binding. A bare-name function parameter
   (`f(job) = ...`) binds by intent and is not flagged.
 

@@ -3044,19 +3044,22 @@ let scaffold_cmd files prelude =
               | None -> refuse (file ^ " declares no `multi` effect to explore")
               | Some text -> (
                   let scaffold_file = Filename.remove_extension file ^ "-explore-test.jac" in
+                  let refuse_with diagnostics =
+                    print_diags
+                      (cli_diagnostic ~code:"E1017"
+                         "the generated scaffold does not format or check together with the file \
+                          (a name it generates may already be taken); diagnostics follow"
+                      :: diagnostics)
+                  in
                   match format_surface_source ~file:scaffold_file text with
-                  | Error ds -> print_diags ds
+                  | Error ds -> refuse_with ds
                   | Ok formatted -> (
                       match check ~file:scaffold_file (source ^ "\n" ^ formatted) with
                       | Ok (Frontend.Checked _) ->
                           print_string formatted;
                           ok
                       | Ok (Frontend.Recovered { diagnostics; _ }) | Error diagnostics ->
-                          print_diags
-                            (cli_diagnostic ~code:"E1017"
-                               "the generated scaffold does not check together with the file (a \
-                                name it generates may already be taken); diagnostics follow"
-                            :: diagnostics))))))
+                          refuse_with diagnostics)))))
   | [ file ] -> refuse (file ^ " is not a .jac source file")
   | _ -> refuse "--scaffold takes exactly one FILE"
 

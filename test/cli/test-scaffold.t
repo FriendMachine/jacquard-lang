@@ -90,7 +90,7 @@ refused rather than printed.
   -- Save next to it and run: jacquard test edge.jac <this file>
   -- Log is not explored: exploration needs a `multi` effect without parameters.
   pick-explored =
-  -- TODO: both also performs effects the scaffold does not explore ((Int) ->{Log, Coin} Int); write its case.
+  -- TODO: both performs several effects ((Int) ->{Log, Coin} Int); a scaffold Case explores one. Write its case.
   twice-explored =
   $ jacquard test edge.jac edge-explore-test.jac; echo "exit:$?"
   PASS pick-explored/pick on every outcome (TODO: state the property) (1 check, 2 executions explored, complete)
@@ -115,3 +115,26 @@ A file without a `multi` effect, or more than one file, is refused.
   exit:1
   $ sed -n 2p two.out
     Cause: --scaffold takes exactly one FILE
+
+Generated names drop a trailing `?` or `!` from the name they are built from.
+
+  $ cat > marks.jac <<'EOF'
+  > multi effect Coin where {
+  >   flip : () -> Bool
+  >   count? : () -> Int
+  > }
+  > heads?(n) = if flip() then int.add(n, count?()) else n
+  > EOF
+  $ jacquard test --scaffold marks.jac > marks-explore-test.jac; echo "exit:$?"
+  exit:0
+  $ grep -E "^[a-z?-]+ (:|=)|^[a-z?-]+\(" marks-explore-test.jac
+  count-outcomes() = []
+  coin-world(
+  coin-runs(thunk) = explore.all(fn () -> coin-world(thunk))
+  heads-explored : Test
+  heads-explored =
+  $ jacquard test marks.jac marks-explore-test.jac; echo "exit:$?"
+  PASS heads-explored/heads? on every outcome (TODO: state the property) (1 check, 1 execution explored, complete)
+  1 passed, 0 failed, 0 skipped, 0 refused
+  cache: 0 hit, 1 ran
+  exit:0

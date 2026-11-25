@@ -5,12 +5,23 @@
 
 (* surface AST names are kernel names: kebab-case, PascalCase only when rendered *)
 let pascal kernel = Surface_name.render Surface_name.Con kernel
+let term kernel = Surface_name.render Surface_name.Term kernel
+
+(* a generated name derived from [kernel]: a trailing `?` or `!` may only end a name, so it is
+   dropped before the suffix; rendered, so a name that needs an escape gets one *)
+let derived kernel suffix =
+  let n = String.length kernel in
+  let base =
+    if n > 1 && (kernel.[n - 1] = '?' || kernel.[n - 1] = '!') then String.sub kernel 0 (n - 1)
+    else kernel
+  in
+  term (base ^ "-" ^ suffix)
 
 (* The finite outcomes of an operation's result type, when they can be listed: Bool, (), or a type
    this file declares whose constructors all take no fields. *)
 let outcomes ~(types : (string * Surface_ast.constructor list) list) (ty : Surface_ast.ty) =
   match ty.Surface_ast.it with
-  | Surface_ast.TyName "bool" -> Some [ "False"; "True" ]
+  | Surface_ast.TyName "bool" when not (List.mem_assoc "bool" types) -> Some [ "False"; "True" ]
   | Surface_ast.TyTuple [] -> Some [ "()" ]
   | Surface_ast.TyName name -> (
       match List.assoc_opt name types with
@@ -37,8 +48,8 @@ let split_top_commas text =
   parts := String.sub text !start (String.length text - !start) :: !parts;
   List.rev_map String.trim !parts |> List.filter (fun s -> s <> "")
 
-(* A checked signature `forall ... . (P1, P2) ->{E1, E2 | e} R`: its parameter types and the
-   effects of its outermost row. *)
+(* A checked signature `forall ... . (P1, P2) ->{E1, E2 | e} R`: its parameter types, the effects
+   of its outermost row, and the result type's text. *)
 let parse_signature signature =
   let signature = String.trim signature in
   (* a quantifier only names type and row variables: drop it *)
@@ -76,7 +87,8 @@ let parse_signature signature =
             let row = String.sub rest 3 (brace - 3) in
             let row = match String.index_opt row '|' with Some bar -> String.sub row 0 bar | None -> row in
             let effects = split_top_commas row in
-            Some (params, effects)
+            let result = String.sub rest (brace + 1) (String.length rest - brace - 1) in
+            Some (params, effects, result)
 
 (* whether a rendered signature's effect rows name [effect] *)
 let mentions_effect signature effect =
@@ -98,6 +110,8 @@ let placeholder ty =
   | "Bool" -> Some "False"
   | "Real" -> Some "0.0"
   | _ when String.length ty >= 5 && String.sub ty 0 5 = "List " -> Some "[]"
+  (* a bare type variable: any value instantiates it *)
+  | _ when String.length ty > 0 && String.for_all (fun c -> c >= 'a' && c <= 'z') ty -> Some "0"
   | _ -> None
 
 (** [generate ~file ~tops ~signatures] is the scaffold text, or [None] when FILE declares no
@@ -144,11 +158,27 @@ let generate ~file ~(tops : Surface_ast.top list) ~(signatures : (string * strin
           (Surface_name.render Surface_name.Effect name))
       skipped_effects;
     line "";
-    let todo_outcomes = ref [] in
+    (* operations whose outcomes cannot be listed come first: the formatter places a definition
+       before its first use, which would otherwise move it above this header *)
+    let todo_outcomes =
+      List.concat_map
+        (fun (_, operations) ->
+          List.filter_map
+            (fun (op : Surface_ast.operation) ->
+              match outcomes ~types op.result with None -> Some op.name | Some _ -> None)
+            operations)
+        effects
+    in
+    List.iter
+      (fun op ->
+        line "-- TODO: list the outcomes of %s; an empty list prunes every execution that reaches it"
+          op;
+        line "%s() = []" (derived op "outcomes");
+        line "")
+      todo_outcomes;
     List.iter
       (fun (name, operations) ->
-        let effect_kebab = name in
-        line "%s-world(body) = handle body() {" effect_kebab;
+        line "%s(body) = handle body() {" (derived name "world");
         line "  | return v -> v";
         List.iter
           (fun (op : Surface_ast.operation) ->
@@ -159,53 +189,50 @@ let generate ~file ~(tops : Surface_ast.top list) ~(signatures : (string * strin
               | Some listed ->
                   Printf.sprintf "explore.branch(\"%s\", [%s])" op.name (String.concat ", " listed)
               | None ->
-                  todo_outcomes := op.name :: !todo_outcomes;
-                  Printf.sprintf "explore.branch(\"%s\", %s-outcomes())" op.name op.name
+                  Printf.sprintf "explore.branch(\"%s\", %s())" op.name (derived op.name "outcomes")
             in
-            line "  | %s(%s) resume k -> k(%s)" op.name (String.concat ", " params) answer)
+            line "  | %s(%s) resume k -> k(%s)"
+              (Surface_name.render Surface_name.Op op.name)
+              (String.concat ", " params) answer)
           operations;
         line "}";
         line "";
-        line "%s-runs(thunk) = explore.all(fn () -> %s-world(thunk))" effect_kebab effect_kebab;
+        line "%s(thunk) = explore.all(fn () -> %s(thunk))" (derived name "runs") (derived name "world");
         line "")
       effects;
-    List.iter
-      (fun op ->
-        line "-- TODO: list the outcomes of %s; an empty list prunes every execution that reaches it"
-          op;
-        line "%s-outcomes() = []" op;
-        line "")
-      (List.rev !todo_outcomes);
     let effect_names = List.map (fun (name, _) -> Surface_name.render Surface_name.Effect name) effects in
     List.iter
-      (fun (term, signature) ->
+      (fun (name, signature) ->
         match parse_signature signature with
-        | Some (params, [ effect ]) when List.mem effect effect_names ->
+        | Some (_, _, result) when List.exists (fun e -> mentions_effect result e) effect_names ->
+            line "-- TODO: %s returns a function that performs an effect (%s); write its case." name
+              signature
+        | Some (params, [ effect ], _) when List.mem effect effect_names ->
             let args = List.map placeholder params in
             if List.exists Option.is_none args then
               line "-- TODO: %s takes arguments the scaffold cannot fill in (%s); write its case."
-                term signature
+                name signature
             else begin
               let args = List.filter_map Fun.id args in
-              line "%s-explored : Test" term;
+              line "%s : Test" (derived name "explored");
               line
-                "%s-explored = Case(\"%s on every outcome (TODO: state the property)\", fn () -> {"
-                term term;
+                "%s = Case(\"%s on every outcome (TODO: state the property)\", fn () -> {"
+                (derived name "explored") name;
               let effect_kernel =
                 fst (List.find (fun (name, _) -> Surface_name.render Surface_name.Effect name = effect) effects)
               in
-              line "  let runs = %s-runs(fn () -> %s(%s))" effect_kernel term
+              line "  let runs = %s(fn () -> %s(%s))" (derived effect_kernel "runs") (term name)
                 (String.concat ", " args);
               line "  check.true(list.all?(runs, fn (run) -> True), \"TODO: replace True with the property\")";
               line "})";
               line ""
             end
-        | Some (_, effects) when List.exists (fun e -> List.mem e effect_names) effects ->
+        | Some (_, effects, _) when List.exists (fun e -> List.mem e effect_names) effects ->
             line
-              "-- TODO: %s also performs effects the scaffold does not explore (%s); write its case."
-              term signature
+              "-- TODO: %s performs several effects (%s); a scaffold Case explores one. Write its case."
+              name signature
         | None when List.exists (fun e -> mentions_effect signature e) effect_names ->
-            line "-- TODO: %s has a signature the scaffold cannot call (%s); write its case." term
+            line "-- TODO: %s has a signature the scaffold cannot call (%s); write its case." name
               signature
         | _ -> ())
       signatures;

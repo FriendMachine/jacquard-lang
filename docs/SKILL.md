@@ -1,6 +1,6 @@
 ---
 name: jacquard
-description: Install and use Jacquard; write, check, run, format, hash, infer, test, and compile effect-typed, content-addressed .jac programs. Use for Jacquard surface syntax, capability manifests, handlers, discrete Dist models, Code values, Warp tests, canonical identity, replay, and native AOT builds. Topic pages under docs/skill/ cover the full command reference, Code values and grammar, capabilities, Dist, the prelude, Warp detail, identity and review, and native builds.
+description: Install and use Jacquard; write, check, run, format, hash, infer, test, and compile effect-typed, content-addressed .jac programs. Use for Jacquard surface syntax, capability manifests, handlers, discrete Dist models, Code values, Warp tests, canonical identity, replay, and native AOT builds. Topic pages under docs/skill/ cover the full command reference, Code values and grammar, capabilities, Dist, Warp detail, identity and review, and native builds.
 ---
 
 # Jacquard Standalone Guide
@@ -97,8 +97,8 @@ jac hash PROGRAM.jac
 #   jac interface ...                   public API identity manifests
 #   jac review run, jac relate          behavior and transcript comparison
 #   jac infer, jac dist-diff            Dist inference (skill/dist.md)
-#   jac store, diff, replay, tiers      stores and traces (skill/review-and-identity.md)
-#   jac audit, governance, why-effect   governed Workspace review (skill/capabilities-and-host.md)
+#   jac store, diff, replay, tiers      stores and traces (skill/commands.md)
+#   jac audit, governance, why-effect   governed Workspace review (skill/commands.md)
 #   jac build, jac export               native AOT and .jqd export (skill/native-and-carriers.md)
 ```
 
@@ -394,7 +394,8 @@ Labeled constructor patterns are refutable, just like positional constructor
 patterns, so they are not valid lambda parameters or `let` binders.
 Inside `quote { ... }`, constructor patterns must remain positional; labeled
 patterns there fail with E1237 because quoted code cannot carry their labels
-semantically.
+semantically (quoting is covered in
+[skill/code-and-grammar.md](skill/code-and-grammar.md)).
 
 Use a braced block when an arm sequences work:
 
@@ -768,7 +769,9 @@ complete (see docs/warp-testing.md, "Exploring every outcome of your own effect"
 ## Failure Modes And Limits
 
 - No ambient authority: missing grants are expected refusals, not runtime
-  configuration bugs.
+  configuration bugs. Never infer authority from a hand-written manifest or
+  comment; use the checked row. Never add a grant merely to silence a refusal
+  without reviewing why the row contains that effect.
 - No null, records, modules/imports, guards, or-patterns, custom operators,
   or implicit traits/typeclasses (constructor field accessors and setters are
   generated only for labels every constructor carries; `Ctor(value with

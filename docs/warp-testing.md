@@ -367,6 +367,23 @@ evaluated once, so only the first case to read it reports the count (its limit s
 to every reader). Check labels inside an explored thunk do not name the path; collect the
 paths from the result to report which executions failed.
 
+`jacquard test --scaffold FILE.jac` writes this boilerplate for you. It checks FILE and prints
+a test source to save next to it, then run with `jacquard test FILE.jac FILE-explore-test.jac`:
+
+- for each `multi` effect FILE declares, an `<effect>-world(body)` forwarding handler and an
+  `<effect>-runs(thunk)` helper over `explore.all`. An operation returning `Bool`, `()` or a
+  type FILE declares whose constructors take no fields answers with all its outcomes; any
+  other operation answers from a generated `<op>-outcomes() = []` marked TODO (an empty list
+  prunes, so the scaffold runs before you fill it in);
+- for each top-level function whose effects are exactly one of those effects, a `Case` that
+  explores it with placeholder arguments (`0`, `""`, `False`, `0.0`, `[]`) and checks a
+  property left as `True`, with TODO in its name and label. A function with other
+  parameter types or other effects gets a TODO comment instead.
+
+The output is formatted, and is checked together with FILE before it is printed. A file
+with no `multi` effect, or a scaffold that does not check (a generated name already taken),
+is refused with E1017. Evidence: `test/cli/test-scaffold.t`.
+
 ## 7. The cache, and what CI stops doing
 
 Hashing is Merkle-transitive: a definition's hash covers the hashes it references,

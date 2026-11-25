@@ -67,6 +67,7 @@ let diagnostic_summary = function
   | "E1005" -> "Observation policy is invalid or refused"
   | "E1007" -> "Relational runs cannot be called equal"
   | "E1016" -> "Exploration recording cannot proceed"
+  | "E1017" -> "Test scaffold cannot be generated"
   | "E1101" -> "Program is outside the native v1 compilation subset"
   | "E1102" -> "Program requires the interpreter tier"
   | "E1103" -> "Native build could not complete"
@@ -102,6 +103,9 @@ let diagnostic_next_step = function
   | "E1016" ->
       "Choose a new log path, positive bounds, or raise --max-steps/--max-bytes; a recording is \
        never truncated silently."
+  | "E1017" ->
+      "Pass one .jac file that checks and declares a `multi` effect, and rename any definition \
+       whose name the scaffold generates."
   | "E1101" -> "Run the program with the interpreter or rewrite the unsupported construct."
   | "E1102" -> "Run this program with the interpreter."
   | "E1103" -> "Correct the native toolchain or build input and try again."
@@ -1184,6 +1188,25 @@ let infer_lw_cmd file prelude seed samples metadata fuel alloc
 
 (* --- fmt --- *)
 
+(* the surface formatting pipeline: parse, lower, print with trivia, and refuse output that does not
+   reparse or would format differently again *)
+let format_surface_source ?(lint = fun _ -> ()) ~file src =
+  let format ~lint text =
+    let recovered = Surface_parse.recover_string ~file text in
+    Result.bind (Surface_parse.strict_file recovered) (fun parsed ->
+        lint parsed;
+        Result.bind (Surface_lower.lower_file parsed) (fun lowered ->
+            Result.bind
+              (Surface_print.print_file_with_trivia ~file_meta:lowered.meta lowered.tops)
+              (Surface_print.check_reparses ~source:text ~file)))
+  in
+  Result.bind (format ~lint src) (fun out ->
+      (* formatting is a fixed point: output that would format differently again is a printer
+         bug, refused rather than printed *)
+      Result.bind (format ~lint:ignore out) (fun again ->
+          if String.equal out again then Ok out
+          else Error [ Surface_print.unstable_formatting ~file ]))
+
 let fmt_cmd file write syntax =
   let src = read_file file in
   let formatted =
@@ -1191,22 +1214,8 @@ let fmt_cmd file write syntax =
     | Auto -> assert false
     | Bootstrap -> Result.map Printer.format_all (Reader.parse_string ~file src)
     | Surface ->
-        let format ~lint text =
-          let recovered = Surface_parse.recover_string ~file text in
-          Result.bind (Surface_parse.strict_file recovered) (fun parsed ->
-              if lint then
-                print_warnings (Surface_check.lint ~names:Resolve.empty_names parsed.tops);
-              Result.bind (Surface_lower.lower_file parsed) (fun lowered ->
-                  Result.bind
-                    (Surface_print.print_file_with_trivia ~file_meta:lowered.meta lowered.tops)
-                    (Surface_print.check_reparses ~source:text ~file)))
-        in
-        Result.bind (format ~lint:true src) (fun out ->
-            (* formatting is a fixed point: output that would format differently again is a
-               printer bug, refused rather than printed *)
-            Result.bind (format ~lint:false out) (fun again ->
-                if String.equal out again then Ok out
-                else Error [ Surface_print.unstable_formatting ~file ]))
+        format_surface_source ~file src ~lint:(fun (parsed : Surface_ast.file) ->
+            print_warnings (Surface_check.lint ~names:Resolve.empty_names parsed.tops))
   in
   match formatted with
   | Error ds -> print_diags ds
@@ -3006,6 +3015,67 @@ let replay_t =
       $ Arg.(value & flag & info [ "compare" ])
       $ prelude_arg)
 
+(* TEST.5: print an exploration-test skeleton for FILE's multi effects; it is formatted and
+   checked together with FILE before anything is printed *)
+let scaffold_cmd files prelude =
+  let refuse cause = print_diags [ cli_diagnostic ~code:"E1017" cause ] in
+  match files with
+  | [ file ] when Filename.check_suffix file ".jac" -> (
+      let source = read_file file in
+      let check ~file source =
+        Frontend.check ~prelude_dir:(prelude_dir_of prelude) ~root:(fresh_check_root ())
+          ~syntax:Frontend.Auto ~file source
+      in
+      match check ~file source with
+      | Error ds -> print_diags ds
+      | Ok (Frontend.Recovered { diagnostics; _ }) -> print_diags diagnostics
+      | Ok (Frontend.Checked artifact) -> (
+          let signatures =
+            List.concat_map
+              (fun (top : Frontend.Checked.top) -> top.signatures)
+              (Frontend.Checked.tops artifact)
+          in
+          match Surface_parse.strict_file (Surface_parse.recover_string ~file source) with
+          | Error ds -> print_diags ds
+          | Ok parsed -> (
+              match
+                Test_scaffold.generate ~file:(Filename.basename file) ~tops:parsed.tops ~signatures
+              with
+              | None -> refuse (file ^ " declares no `multi` effect to explore")
+              | Some text -> (
+                  let scaffold_file = Filename.remove_extension file ^ "-explore-test.jac" in
+                  match format_surface_source ~file:scaffold_file text with
+                  | Error ds -> print_diags ds
+                  | Ok formatted -> (
+                      match check ~file:scaffold_file (source ^ "\n" ^ formatted) with
+                      | Ok (Frontend.Checked _) ->
+                          print_string formatted;
+                          ok
+                      | Ok (Frontend.Recovered { diagnostics; _ }) | Error diagnostics ->
+                          print_diags
+                            (cli_diagnostic ~code:"E1017"
+                               "the generated scaffold does not check together with the file (a \
+                                name it generates may already be taken); diagnostics follow"
+                            :: diagnostics))))))
+  | [ file ] -> refuse (file ^ " is not a .jac source file")
+  | _ -> refuse "--scaffold takes exactly one FILE"
+
+let test_or_scaffold scaffold files allows prelude cache_dir no_cache coverage seed samples
+    exhaustive budget schedules fuel alloc ceilings =
+  if scaffold then scaffold_cmd files prelude
+  else
+    test_cmd files allows prelude cache_dir no_cache coverage seed samples exhaustive budget
+      schedules fuel alloc ceilings
+
+let scaffold_arg =
+  Arg.(
+    value & flag
+    & info [ "scaffold" ]
+        ~doc:
+          "Print an exploration-test skeleton for FILE's multi effects instead of running tests: a \
+           forwarding handler per effect that answers every operation through explore.branch, and \
+           one Case per entry point with a TODO property. Save it next to FILE and run both.")
+
 let test_files_arg = Arg.(value & pos_all file [] & info [] ~docv:"FILES")
 
 let cache_dir_arg =
@@ -3094,10 +3164,10 @@ let test_t =
          "Discover tests by checked type (decision D12) and run them: the hermetic lane under \
           test.run, the world lane behind --allow grants.")
     Term.(
-      const (configure_diagnostics test_cmd)
-      $ diagnostic_format_arg $ test_files_arg $ allows_arg $ prelude_arg $ cache_dir_arg
-      $ no_cache_arg $ coverage_arg $ seed_arg $ samples_arg $ exhaustive_arg $ budget_arg
-      $ schedules_arg $ test_fuel_arg $ test_alloc_arg $ test_ceilings_arg)
+      const (configure_diagnostics test_or_scaffold)
+      $ diagnostic_format_arg $ scaffold_arg $ test_files_arg $ allows_arg $ prelude_arg
+      $ cache_dir_arg $ no_cache_arg $ coverage_arg $ seed_arg $ samples_arg $ exhaustive_arg
+      $ budget_arg $ schedules_arg $ test_fuel_arg $ test_alloc_arg $ test_ceilings_arg)
 
 (* --- tiers (PF.2 phase 1) --- *)
 

@@ -67,9 +67,7 @@ let diagnostic_summary = function
   | "E1005" -> "Observation policy is invalid or refused"
   | "E1007" -> "Relational runs cannot be called equal"
   | "E1016" -> "Exploration recording cannot proceed"
-  | "E1017" ->
-      "Pass one .jac file of declarations that checks and declares a `multi` effect; the \
-       diagnostics after this one say what could not be loaded."
+  | "E1017" -> "Test scaffold cannot be generated"
   | "E1101" -> "Program is outside the native v1 compilation subset"
   | "E1102" -> "Program requires the interpreter tier"
   | "E1103" -> "Native build could not complete"
@@ -106,8 +104,8 @@ let diagnostic_next_step = function
       "Choose a new log path, positive bounds, or raise --max-steps/--max-bytes; a recording is \
        never truncated silently."
   | "E1017" ->
-      "Pass one .jac file that checks and declares a `multi` effect, and rename any definition \
-       whose name the scaffold generates."
+      "Pass one .jac file of declarations that checks, declares a `multi` effect, and binds no \
+       name the scaffold defines or relies on; any diagnostics after this one say what failed."
   | "E1101" -> "Run the program with the interpreter or rewrite the unsupported construct."
   | "E1102" -> "Run this program with the interpreter."
   | "E1103" -> "Correct the native toolchain or build input and try again."
@@ -3077,8 +3075,9 @@ let scaffold_cmd files prelude =
               match
                 Test_scaffold.generate ~file:(Filename.basename file) ~tops:parsed.tops ~signatures
               with
-              | None -> refuse (file ^ " declares no `multi` effect to explore")
-              | Some text -> (
+              | Ok None -> refuse (file ^ " declares no `multi` effect to explore")
+              | Error cause -> refuse cause
+              | Ok (Some text) -> (
                   let scaffold_file = Filename.remove_extension file ^ "-explore-test.jac" in
                   let refuse_with diagnostics =
                     print_diags

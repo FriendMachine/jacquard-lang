@@ -9,13 +9,36 @@ let term kernel = Surface_name.render Surface_name.Term kernel
 
 (* a generated name derived from [kernel]: a trailing `?` or `!` may only end a name, so it is
    dropped before the suffix; rendered, so a name that needs an escape gets one *)
+(* every name a scaffold defines, as kernel names, collected while it is generated *)
+let generated = ref []
+
 let derived kernel suffix =
   let n = String.length kernel in
   let base =
     if n > 1 && (kernel.[n - 1] = '?' || kernel.[n - 1] = '!') then String.sub kernel 0 (n - 1)
     else kernel
   in
-  term (base ^ "-" ^ suffix)
+  let name = base ^ "-" ^ suffix in
+  if not (List.mem name !generated) then generated := name :: !generated;
+  term name
+
+(* prelude names a scaffold relies on: a FILE that redefines one would change what the scaffold
+   means (a FILE `Test` type, for example, hides its cases from discovery) *)
+let relied_on =
+  [ "test"; "case"; "true"; "false"; "check.true"; "list.all?"; "explore.all"; "explore.branch" ]
+
+(* every top-level name FILE binds, in any kind, as kernel names *)
+let file_names (tops : Surface_ast.top list) =
+  List.concat_map
+    (fun (top : Surface_ast.top) ->
+      match top.it with
+      | Surface_ast.Signature (name, _) | Surface_ast.Definition { name; _ } -> [ name ]
+      | Surface_ast.TypeDecl { name; constructors; _ } ->
+          name :: List.map (fun (c : Surface_ast.constructor) -> c.name) constructors
+      | Surface_ast.EffectDecl { name; operations; _ } ->
+          name :: List.map (fun (op : Surface_ast.operation) -> op.name) operations
+      | Surface_ast.TopExpr _ | Surface_ast.RawTop _ | Surface_ast.TopHole _ -> [])
+    tops
 
 (* The finite outcomes of an operation's result type, when they can be listed: Bool, (), or a type
    this file declares whose constructors all take no fields. *)
@@ -122,9 +145,12 @@ let placeholder ~types ty =
   | _ when String.length ty > 0 && String.for_all (fun c -> c >= 'a' && c <= 'z') ty -> Some "0"
   | _ -> None
 
-(** [generate ~file ~tops ~signatures] is the scaffold text, or [None] when FILE declares no [multi]
-    effect. [signatures] maps each top-level term to its checked signature. *)
+(** [generate ~file ~tops ~signatures] is [Ok (Some text)], the scaffold; [Ok None] when FILE
+    declares no [multi] effect to explore; or [Error cause] when FILE binds a name the scaffold
+    defines or relies on, so the scaffold would not test what it says. [signatures] maps each
+    top-level term to its checked signature. *)
 let generate ~file ~(tops : Surface_ast.top list) ~(signatures : (string * string) list) =
+  generated := [];
   let types =
     List.filter_map
       (fun (top : Surface_ast.top) ->
@@ -156,7 +182,7 @@ let generate ~file ~(tops : Surface_ast.top list) ~(signatures : (string * strin
         | _ -> None)
       tops
   in
-  if effects = [] then None
+  if effects = [] then Ok None
   else
     let b = Buffer.create 2048 in
     let line fmt =
@@ -261,4 +287,28 @@ let generate ~file ~(tops : Surface_ast.top list) ~(signatures : (string * strin
               signature
         | _ -> ())
       signatures;
-    Some (Buffer.contents b)
+    let own = file_names tops in
+    let taken = List.filter (fun name -> List.mem name own) (List.rev !generated) in
+    let redefined = List.filter (fun name -> List.mem name own) relied_on in
+    let render =
+      List.map (fun name ->
+          match name with
+          | "test" -> "`Test`"
+          | "case" | "true" | "false" -> "`" ^ pascal name ^ "`"
+          | _ -> "`" ^ term name ^ "`")
+    in
+    match (taken, redefined) with
+    | [], [] -> Ok (Some (Buffer.contents b))
+    | [], _ ->
+        Error
+          (Printf.sprintf
+             "%s redefines %s, which the scaffold relies on from the prelude; a scaffold would not \
+              test what it says"
+             file
+             (String.concat ", " (render redefined)))
+    | _ ->
+        Error
+          (Printf.sprintf "%s already defines %s, which the scaffold would define too; rename %s"
+             file
+             (String.concat ", " (render taken))
+             (if List.length taken = 1 then "it" else "them"))

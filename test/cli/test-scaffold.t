@@ -97,14 +97,24 @@ comments, and a polymorphic entry point gets a Case like any other.
   2 passed, 0 failed, 0 skipped, 0 refused
   cache: 0 hit, 2 ran
   exit:0
-  $ printf 'coin-world = 3\n' >> edge.jac
-  $ jacquard test --scaffold edge.jac > edge-explore-test.jac; echo "exit:$?"
-  exit:0
-  $ jacquard test edge.jac edge-explore-test.jac > edge.out; echo "exit:$?"
-  exit:0
 
-The two files load as separate sources, so a FILE name the scaffold also generates does not clash.
-A FILE that `jacquard test` cannot load (a top-level expression) is refused rather than scaffolded.
+A FILE that already defines a name the scaffold would define, or redefines a prelude name the
+scaffold relies on (`Test`, `Case`, `True`, `False`), is refused: the scaffold would test something
+else, or its cases would not be discovered. So is a FILE that `jacquard test` cannot load (a
+top-level expression).
+
+  $ printf 'coin-world = 3\n' >> edge.jac
+  $ jacquard test --scaffold edge.jac > clash.jac 2> clash.err; echo "exit:$?"
+  exit:1
+  $ wc -c < clash.jac
+  0
+  $ grep Cause clash.err
+    Cause: edge.jac already defines `coin-world`, which the scaffold would define too; rename it
+  $ printf 'type Test = | Case(Text, () ->{Check} ())\nmulti effect Coin where { flip : () -> Bool }\nf(n) = if flip() then n else 0\n' > own-test.jac
+  $ jacquard test --scaffold own-test.jac > own-test-explore-test.jac 2> own-test.err; echo "exit:$?"
+  exit:1
+  $ grep Cause own-test.err
+    Cause: own-test.jac redefines `Test`, `Case`, which the scaffold relies on from the prelude; a scaffold would not test what it says
 
   $ printf 'multi effect Coin where {\n  flip : () -> Bool\n}\ntwice(n) = if flip() then n else 0\ntwice(2)\n' > expr.jac
   $ jacquard test --scaffold expr.jac > expr-explore-test.jac 2> expr.err; echo "exit:$?"

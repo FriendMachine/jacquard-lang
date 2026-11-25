@@ -377,19 +377,26 @@ a test source to save next to it, then run with `jacquard test FILE.jac FILE-exp
   other operation answers from a generated `<op>-outcomes() = []` marked TODO (an empty list
   prunes, so the scaffold runs before you fill it in);
 - for each top-level function whose effects are exactly one of those effects, a `Case` that
-  explores it with placeholder arguments (`0`, `""`, `False`, `0.0`, `[]`, and `0` for a type
-  variable) and checks a property left as `True`, with TODO in its label. A function with
+  explores it with placeholder arguments (`0`, `""`, `False`, `0.0`, `[]`, `()`, and `0` for a
+  type variable) and checks a property left as `True`, with TODO in its label. Replace the
+  placeholders too: an argument such as `0` may divide by zero, or make the function return
+  before it performs any operation (one execution explored). A function with
   other parameter types or several effects gets a TODO comment instead. A generated name
   drops a trailing `?` or `!` from the name it is built from (`valid?` gets `valid-explored`).
 
-A function whose recursion depends on an outcome, such as `walk(n) = if flip() then walk(n + 1)
-else n`, has executions that never finish, so its Case never completes: set a depth bound in
-the function, or explore it with `explore.up-to` and a small limit.
+A function whose recursion depends on an outcome, such as `walk(n) = if flip() then
+walk(int.add(n, 1)) else n`, has executions that never finish, so its Case never completes: set
+a depth bound in the function, or explore it with `explore.up-to` and a small limit. A function
+that makes many choices can reach the 10,000-execution limit (nine operations with three
+outcomes each make 19,683 executions), and its Case then fails with E0905.
 
 The output is formatted, and is checked with FILE before it is printed, the way `jacquard test`
-loads the two files. A file with no `multi` effect, or one that `jacquard test` could not load
-with its scaffold (a top-level expression, or two generated names that coincide, as for
-`valid?` beside `valid`), is refused with E1017. Evidence: `test/cli/test-scaffold.t`.
+loads the two files. E1017 refuses a file with no `multi` effect; a file that already defines a
+name the scaffold would define (rename it), or redefines a prelude name the scaffold relies on
+(`Test`, `Case`, `True`, `False`, `check.true`, `list.all?`, `explore.all`, `explore.branch`), since
+the scaffold would then test something else or go undiscovered; and a file that `jacquard test`
+could not load with its scaffold (a top-level expression, or two generated names that coincide, as
+for `valid?` beside `valid`). Evidence: `test/cli/test-scaffold.t`.
 
 ## 7. The cache, and what CI stops doing
 

@@ -179,7 +179,8 @@ let token_description state token =
       Printf.sprintf "the reserved word `%s`" word
   | Surface_lex.Equal when adjacent_equal state token ->
       (* DOC.5: `a == b` *)
-      "`=` (there is no `==`: compare Ints with `eq(a, b)` and Text with `text.eq?(a, b)`)"
+      "`=` (there is no `==` operator: to compare, write `eq(a, b)` for Ints and `text.eq?(a, b)` \
+       for Text)"
   | token -> Surface_lex.show_token token
 
 let advance_recording_invalid state = advance state

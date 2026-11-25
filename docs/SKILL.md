@@ -237,7 +237,8 @@ Common first-draft mistakes, with the form Jacquard expects:
 - A type signature is its own line before the definition, and a function type
   in a signature always lists its effects, `->{}` for none: `area : (Int, Int) ->{} Int`
   then `area(w, h) = int.mul(w, h)`; never `area(w, h) : Int = ...`. (Operations inside
-  an `effect` declaration are the exception: they write a bare `->`.)
+  an `effect` declaration are the exception: they write a bare `->`, though a
+  function type inside an operation's parameters still writes `->{}`.)
 - Tuples have no `.0`/`.1` access: destructure with `let (a, b) = pair` or
   `match pair { | (a, b) -> ... }`.
 - An operation clause names its continuation with `resume`, and the clause
@@ -1201,11 +1202,12 @@ Do not invent new kernel forms for surface sugar.
 - A local `let rec` whose body performs an effect can fail row inference
   (E0801); annotate the recursive call with its type or use a top-level
   recursive definition.
-- W1201 warns when a lowercase pattern in a match arm, `let` or nested
-  parameter pattern is spelled like a constructor in scope (`job` for `Job`);
-  write the constructor's PascalCase name to match it. A bare-name function
-  parameter (`f(job) = ...`) binds by intent and is not flagged; an operation
-  clause's parameters are patterns (`| run(Job) resume k` matches), so they are.
+- W1201 warns when a lowercase pattern in a match arm, operation clause, `let`
+  or nested parameter pattern is spelled like a constructor in scope (`job` for
+  `Job`). In a match arm or an operation clause, write the constructor's
+  PascalCase name to match it (`| run(Job) resume k`); elsewhere a pattern cannot
+  match a constructor, so rename the binding. A bare-name function parameter
+  (`f(job) = ...`) binds by intent and is not flagged.
 
 ## Recommended Agent Workflow
 

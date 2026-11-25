@@ -38,17 +38,17 @@ Boolean and comparison operators name the functions to use.
   $ jacquard check and.jac > and.out 2>&1; echo "exit:$?"
   exit:1
   $ sed -n 2p and.out
-    Cause: unexpected surface character `&`; there is no `&&`: write `bool.and(a, b)`, or `bool.and-then(a, fn () -> b)` to stop early
+    Cause: unexpected surface character `&`; there is no `&&` operator: to combine Bools, write `bool.and(a, b)`, or `bool.and-then(a, fn () -> b)` to stop early
   $ printf 'f(a) = !a\n' > not.jac
   $ jacquard check not.jac > not.out 2>&1; echo "exit:$?"
   exit:1
   $ sed -n 2p not.out
-    Cause: unexpected surface character `!`; there is no `!` operator: write `bool.not(x)`
+    Cause: unexpected surface character `!`; there is no `!` operator: to negate a Bool, write `bool.not(x)`
   $ printf 'f(a, b) = a == b\n' > eqeq.jac
   $ jacquard check eqeq.jac > eqeq.out 2>&1; echo "exit:$?"
   exit:1
   $ sed -n 2p eqeq.out
-    Cause: top-level items require a newline or `;`, found `=` (there is no `==`: compare Ints with `eq(a, b)` and Text with `text.eq?(a, b)`)
+    Cause: top-level items require a newline or `;`, found `=` (there is no `==` operator: to compare, write `eq(a, b)` for Ints and `text.eq?(a, b)` for Text)
 
 A function parameter named like a constructor binds by intent; a match arm, and an operation clause
 (whose parameters are patterns), still warn.
@@ -95,7 +95,7 @@ closure in other languages), a lone `&` and `= =` get the plain messages; `!=` g
   $ printf 'f(a, b) = a != b\n' > ne.jac
   $ jacquard check ne.jac > ne.out 2>&1; echo "exit:$?"
   exit:1
-  $ grep -c "there is no \`!=\`" ne.out
+  $ grep -c "there is no \`!=\` operator" ne.out
   1
   $ printf 'x = 1 // note\n' > slash.jac
   $ jacquard check slash.jac > slash.out 2>&1; echo "exit:$?"
@@ -118,7 +118,7 @@ closure in other languages), a lone `&` and `= =` get the plain messages; `!=` g
   $ printf 'f(a, b) = a = = b\n' > spaced.jac
   $ jacquard check spaced.jac > spaced.out 2>&1; echo "exit:$?"
   exit:1
-  $ grep -c "there is no \`==\`" spaced.out
+  $ grep -c "there is no \`==\` operator" spaced.out
   0
   [1]
   $ printf 'f(x) = match x { | 1 => 2 | _ => 3 }\n' > fat.jac

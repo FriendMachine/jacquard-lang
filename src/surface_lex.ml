@@ -624,15 +624,17 @@ let next_regular state =
       let start_pos = pos state in
       ignore (advance state);
       let hint =
-        (* DOC.5: the operators agents reach for most when no guide says otherwise *)
+        (* DOC.5: the operators agents reach for most when no guide says otherwise. Each hint states
+           that the operator does not exist, then advises only for the use agents meant, so it
+           stays true where the character means something else (`&&x`, `r := !r`, `x!`) *)
         match char with
         | '&' when peek state = Some '&' ->
-            "; there is no `&&`: write `bool.and(a, b)`, or `bool.and-then(a, fn () -> b)` to stop \
-             early"
+            "; there is no `&&` operator: to combine Bools, write `bool.and(a, b)`, or \
+             `bool.and-then(a, fn () -> b)` to stop early"
         | '!' when peek state = Some '=' ->
-            "; there is no `!=`: write `bool.not(eq(a, b))` for Ints or `bool.not(text.eq?(a, b))` \
-             for Text"
-        | '!' -> "; there is no `!` operator: write `bool.not(x)`"
+            "; there is no `!=` operator: to compare, write `bool.not(eq(a, b))` for Ints or \
+             `bool.not(text.eq?(a, b))` for Text"
+        | '!' -> "; there is no `!` operator: to negate a Bool, write `bool.not(x)`"
         | _ -> ""
       in
       fail state start_pos "E1210" (Printf.sprintf "unexpected surface character `%c`%s" char hint)

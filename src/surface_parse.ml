@@ -153,12 +153,15 @@ let mark_recovered_construct state meta =
   state.next_hole <- id + 1;
   meta |> Meta.with_surface_form "recovery-delimiter" |> Meta.with_surface_hole (string_of_int id)
 
-let followed_by state token next =
-  (* error path only: find the token by identity and look at the next one *)
+let adjacent_equal state token =
+  (* error path only: find the token by identity; `==` is two `=` tokens with nothing between *)
   let tokens = state.tokens in
   let rec find index =
     if index >= Array.length tokens - 1 then false
-    else if tokens.(index) == token then tokens.(index + 1).Surface_lex.token = next
+    else if tokens.(index) == token then
+      let next = tokens.(index + 1) in
+      next.Surface_lex.token = Surface_lex.Equal
+      && next.Surface_lex.span.Span.start_pos.offset = token.Surface_lex.span.Span.end_pos.offset
     else find (index + 1)
   in
   find 0
@@ -174,13 +177,9 @@ let token_description state token =
       (("rec" | "type" | "effect" | "once" | "multi" | "as" | "where" | "quote" | "jqd" | "try") as
        word) ->
       Printf.sprintf "the reserved word `%s`" word
-  | Surface_lex.Equal when followed_by state token Surface_lex.Equal ->
+  | Surface_lex.Equal when adjacent_equal state token ->
       (* DOC.5: `a == b` *)
       "`=` (there is no `==`: compare Ints with `eq(a, b)` and Text with `text.eq?(a, b)`)"
-  | Surface_lex.Bar when followed_by state token Surface_lex.Bar ->
-      (* DOC.5: `a || b` *)
-      "`|` (there is no `||`: write `bool.or(a, b)`, or `bool.or-else(a, fn () -> b)` to stop \
-       early)"
   | token -> Surface_lex.show_token token
 
 let advance_recording_invalid state = advance state

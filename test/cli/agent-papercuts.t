@@ -39,11 +39,6 @@ Boolean and comparison operators name the functions to use.
   exit:1
   $ sed -n 2p and.out
     Cause: unexpected surface character `&`; there is no `&&`: write `bool.and(a, b)`, or `bool.and-then(a, fn () -> b)` to stop early
-  $ printf 'f(a, b) = bool.and(a || b, True)\n' > or.jac
-  $ jacquard check or.jac > or.out 2>&1; echo "exit:$?"
-  exit:1
-  $ grep -c "there is no \`||\`" or.out
-  2
   $ printf 'f(a) = !a\n' > not.jac
   $ jacquard check not.jac > not.out 2>&1; echo "exit:$?"
   exit:1
@@ -55,7 +50,8 @@ Boolean and comparison operators name the functions to use.
   $ sed -n 2p eqeq.out
     Cause: top-level items require a newline or `;`, found `=` (there is no `==`: compare Ints with `eq(a, b)` and Text with `text.eq?(a, b)`)
 
-A parameter named like a constructor binds by intent; a match arm still warns.
+A function parameter named like a constructor binds by intent; a match arm, and an operation clause
+(whose parameters are patterns), still warn.
 
   $ printf 'type Done = | Done\nf(done) = done\ng(x) = match x { | done -> 1 }\n' > case.jac
   $ jacquard check case.jac > case.out 2>&1; echo "exit:$?"
@@ -64,10 +60,19 @@ A parameter named like a constructor binds by intent; a match arm still warns.
   1
   $ grep -c "case.jac:3:" case.out
   1
+  $ cat > op.jac <<'EOF'
+  > type Done = | Done
+  > multi effect Pick where { choose : (Done) -> Int }
+  > h(body) = handle body() { | return v -> v | choose(done) resume k -> k(1) }
+  > EOF
+  $ jacquard check op.jac > op.out 2>&1; echo "exit:$?"
+  exit:0
+  $ grep -c "W1201" op.out
+  1
 
 Hints stay out of places where their advice would be wrong: a constructor declaration with a stray
-`:`, a user's own `add`, a user type named `Show`, `=>` and a `/* */` comment get the plain
-messages; `!=` and `//` get their own.
+`:`, a user's own `add`, a user type named `Show`, `=>`, a `/* */` comment, `//`, `||` (also a
+closure in other languages), a lone `&` and `= =` get the plain messages; `!=` gets its own.
 
   $ printf 'type T = | A : Int\n' > colon.jac
   $ jacquard check colon.jac > colon.out 2>&1; echo "exit:$?"
@@ -96,7 +101,26 @@ messages; `!=` and `//` get their own.
   $ jacquard check slash.jac > slash.out 2>&1; echo "exit:$?"
   exit:1
   $ grep -c "comments start with" slash.out
-  1
+  0
+  [1]
+  $ printf 'f(a, b) = bool.and(a || b, True)\ng = bool.and-then(True, || False)\n' > or.jac
+  $ jacquard check or.jac > or.out 2>&1; echo "exit:$?"
+  exit:1
+  $ grep -c "bool.or" or.out
+  0
+  [1]
+  $ printf 'f(x) = text.length(&x)\n' > amp.jac
+  $ jacquard check amp.jac > amp.out 2>&1; echo "exit:$?"
+  exit:1
+  $ grep -c "bool.and" amp.out
+  0
+  [1]
+  $ printf 'f(a, b) = a = = b\n' > spaced.jac
+  $ jacquard check spaced.jac > spaced.out 2>&1; echo "exit:$?"
+  exit:1
+  $ grep -c "there is no \`==\`" spaced.out
+  0
+  [1]
   $ printf 'f(x) = match x { | 1 => 2 | _ => 3 }\n' > fat.jac
   $ jacquard check fat.jac > fat.out 2>&1; echo "exit:$?"
   exit:1

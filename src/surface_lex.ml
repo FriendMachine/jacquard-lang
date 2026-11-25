@@ -626,14 +626,13 @@ let next_regular state =
       let hint =
         (* DOC.5: the operators agents reach for most when no guide says otherwise *)
         match char with
-        | '&' ->
+        | '&' when peek state = Some '&' ->
             "; there is no `&&`: write `bool.and(a, b)`, or `bool.and-then(a, fn () -> b)` to stop \
              early"
         | '!' when peek state = Some '=' ->
             "; there is no `!=`: write `bool.not(eq(a, b))` for Ints or `bool.not(text.eq?(a, b))` \
              for Text"
         | '!' -> "; there is no `!` operator: write `bool.not(x)`"
-        | '/' when peek state = Some '/' -> "; comments start with `--`"
         | _ -> ""
       in
       fail state start_pos "E1210" (Printf.sprintf "unexpected surface character `%c`%s" char hint)

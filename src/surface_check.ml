@@ -404,8 +404,9 @@ let rec lint_pat names constructors (pattern : Surface_ast.pat) =
   in
   here @ nested
 
-(* DOC.5: a parameter that is a bare name binds by intent (`f(done)` beside a constructor `Done`), so
-   W1201 is not raised for it; nested parameter patterns are linted as match patterns are *)
+(* DOC.5: a function parameter that is a bare name binds by intent (`f(done)` beside a constructor
+   `Done`; constructor patterns are refused there), so W1201 is not raised for it; nested parameter
+   patterns are linted as match patterns are *)
 and lint_param names constructors (pattern : Surface_ast.pat) =
   match pattern.it with Surface_ast.PBind _ -> [] | _ -> lint_pat names constructors pattern
 
@@ -447,7 +448,10 @@ let rec lint_expr names constructors (expression : Surface_ast.expr) =
       @ lint_expr names constructors ret.rbody
       @ List.concat_map
           (fun (operation : Surface_ast.op_clause) ->
-            pats operation.Surface_ast.oparams @ lint_expr names constructors operation.obody)
+            (* an operation clause's parameters match (`| choose(Done)` is a pattern), so a bare name
+               beside a constructor is linted as a match pattern is *)
+            List.concat_map (lint_pat names constructors) operation.Surface_ast.oparams
+            @ lint_expr names constructors operation.obody)
           operations
   | Surface_ast.Quote (Surface_ast.Surface body) ->
       (* quoted code is data: the formatter rewrites a raw `jqd { ... }` quote into surface

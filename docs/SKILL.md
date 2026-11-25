@@ -236,7 +236,8 @@ Common first-draft mistakes, with the form Jacquard expects:
   `text.from-int(n)` renders an Int.
 - A type signature is its own line before the definition, and a function type
   in a signature always lists its effects, `->{}` for none: `area : (Int, Int) ->{} Int`
-  then `area(w, h) = int.mul(w, h)`; never `area(w, h) : Int = ...`.
+  then `area(w, h) = int.mul(w, h)`; never `area(w, h) : Int = ...`. (Operations inside
+  an `effect` declaration are the exception: they write a bare `->`.)
 - Tuples have no `.0`/`.1` access: destructure with `let (a, b) = pair` or
   `match pair { | (a, b) -> ... }`.
 - An operation clause names its continuation with `resume`, and the clause

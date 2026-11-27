@@ -484,6 +484,24 @@ let is_secret_ty ctx t =
       Hash.equal ctx.p_secret identity || String.equal (name_of ctx identity) "secret"
   | _ -> false
 
+let is_int_ty ctx t =
+  match repr t with TCon (identity, []) -> Hash.equal ctx.p_int identity | _ -> false
+
+(* DOC.5: hints about the prelude's Int primitives and dictionaries key on their identities, so a
+   user's own `eq` or `type Show` does not get them *)
+let is_prelude_term ctx name (fn : Kernel.expr) =
+  match (fn.Kernel.it, Prelude_identity.lookup_kind ctx.store name Resolve.KTerm) with
+  | Kernel.Ref (h, Kernel.Term), Some { Resolve.hash; _ } -> Hash.equal h hash
+  | _ -> false
+
+let is_prelude_dictionary_type ctx h =
+  List.exists
+    (fun name ->
+      match Prelude_identity.lookup_kind ctx.store name Resolve.KType with
+      | Some { Resolve.hash; _ } -> Hash.equal h hash
+      | None -> false)
+    [ "eq"; "ord"; "show"; "num" ]
+
 let is_text_ty ctx t =
   match repr t with TCon (identity, []) -> Hash.equal ctx.p_text identity | _ -> false
 
@@ -1979,11 +1997,24 @@ and infer_expr ?(immediate_transformer = false) ctx env ~(ambient : row ref) ~(r
                        () -> ...`"
                       (Option.value ~default:"this value" (Meta.name arg.meta))
                 | None ->
-                    err ~meta:diagnostic_meta
-                      ~next_step:
-                        "the expected side comes from the surrounding context; make both sides \
-                         agree"
-                      ~code:"E0801" "%s: expected %s, got %s (%s)" what (show_ty ctx expected)
+                    let next_step =
+                      (* DOC.5: `eq` and the other bare integer primitives take Int only *)
+                      match Meta.name fn.meta with
+                      | Some name
+                        when (not (is_text_ty ctx actual && is_int_ty ctx expected))
+                             || not (is_prelude_term ctx name fn) ->
+                          "the expected side comes from the surrounding context; make both sides \
+                           agree"
+                      | Some "eq" -> "`eq` compares Int values; compare Text with `text.eq?(a, b)`"
+                      | Some ("lt" | "add" | "sub" | "mul" | "div") ->
+                          "the bare arithmetic and comparison functions take Int; for Text use \
+                           `text.concat`, `text.eq?` or `text-compare`"
+                      | _ ->
+                          "the expected side comes from the surrounding context; make both sides \
+                           agree"
+                    in
+                    err ~meta:diagnostic_meta ~next_step ~code:"E0801"
+                      "%s: expected %s, got %s (%s)" what (show_ty ctx expected)
                       (show_ty ctx actual) detail))
             (List.combine args (List.combine params arg_tys));
           let review_warning =
@@ -2052,9 +2083,18 @@ and infer_expr ?(immediate_transformer = false) ctx env ~(ambient : row ref) ~(r
             err ~meta:rhs_meta ~next_step:"Make the right-hand side of `|>` callable." ~code:"E0802"
               "the `|>` right-hand side has type %s, which is not a function" (show_ty ctx t)
           else
-            err ~meta
-              ~next_step:"Apply only a function, constructor, effect operation, or resumption."
-              ~code:"E0802" "%s is not a function" (show_ty ctx t))
+            let next_step =
+              (* DOC.5: a dictionary such as `int.eq` is a value passed to generic functions *)
+              match repr t with
+              | TCon (h, _) when is_prelude_dictionary_type ctx h ->
+                  Printf.sprintf
+                    "%s is a dictionary that generic functions take as an argument (for example \
+                     `list.contains?(xs, x, int.eq)`), not a function; compare Ints with `eq(a, \
+                     b)` and Text with `text.eq?(a, b)`, and render an Int with `text.from-int(n)`"
+                    (match Meta.name fn.meta with Some n -> "`" ^ n ^ "`" | None -> "This value")
+              | _ -> "Apply only a function, constructor, effect operation, or resumption."
+            in
+            err ~meta ~next_step ~code:"E0802" "%s is not a function" (show_ty ctx t))
   | Kernel.Let { isrec = false; binder; value; body } -> (
       match binder.Kernel.it with
       | Kernel.PVar x when is_syntactic_value value ->

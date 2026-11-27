@@ -153,6 +153,19 @@ let mark_recovered_construct state meta =
   state.next_hole <- id + 1;
   meta |> Meta.with_surface_form "recovery-delimiter" |> Meta.with_surface_hole (string_of_int id)
 
+let adjacent_equal state token =
+  (* error path only: find the token by identity; `==` is two `=` tokens with nothing between *)
+  let tokens = state.tokens in
+  let rec find index =
+    if index >= Array.length tokens - 1 then false
+    else if tokens.(index) == token then
+      let next = tokens.(index + 1) in
+      next.Surface_lex.token = Surface_lex.Equal
+      && next.Surface_lex.span.Span.start_pos.offset = token.Surface_lex.span.Span.end_pos.offset
+    else find (index + 1)
+  in
+  find 0
+
 let token_description state token =
   match (diagnostic_token state token).Surface_lex.token with
   (* the nominal field update form (SX.28b, DES.4 Phase 2) is its only construct *)
@@ -164,6 +177,10 @@ let token_description state token =
       (("rec" | "type" | "effect" | "once" | "multi" | "as" | "where" | "quote" | "jqd" | "try") as
        word) ->
       Printf.sprintf "the reserved word `%s`" word
+  | Surface_lex.Equal when adjacent_equal state token ->
+      (* DOC.5: `a == b` *)
+      "`=` (there is no `==` operator: to compare, write `eq(a, b)` for Ints and `text.eq?(a, b)` \
+       for Text)"
   | token -> Surface_lex.show_token token
 
 let advance_recording_invalid state = advance state
@@ -2111,7 +2128,12 @@ and parse_paren_type state ~allow_newlines:_ opening =
 and parse_arrow state ~allow_newlines params left_meta =
   let diagnostics_before_row = List.length state.diagnostics in
   let arrow = advance state in
-  let opening = expect state Surface_lex.LBrace "`{` immediately after `->`" in
+  let opening =
+    (* DOC.5: an arrow type always lists its effects, possibly none *)
+    expect state Surface_lex.LBrace
+      "`{` immediately after `->` (an arrow type always lists its effects: `(Int) ->{} Int` for \
+       none)"
+  in
   let effects = ref [] in
   let tail = ref None in
   let row_owners = ref Meta.empty in
@@ -3768,8 +3790,16 @@ let parse_tokens ?(compose = false) ~source tokens =
       if not separators.consumed then begin
         let token = current state in
         report state token
-          (Printf.sprintf "top-level items require a newline or `;`, found %s"
-             (token_description state token));
+          (Printf.sprintf "top-level items require a newline or `;`, found %s%s"
+             (token_description state token)
+             (match (token.Surface_lex.token, item.Surface_ast.it) with
+             | ( Surface_lex.Colon,
+                 Surface_ast.TopExpr { it = Surface_ast.Call _ | Surface_ast.Name _; _ } ) ->
+                 (* DOC.5: `f(x) : Int = ...`, read as an expression and then a stray `:` *)
+                 "; a type signature goes on its own line before the definition (`f : (Int) ->{} \
+                  Int` then `f(x) = ...`), and an expression is annotated in parentheses, `(e : \
+                  T)`"
+             | _ -> ""));
         synchronize_item state;
         ignore (consume_separators state)
       end

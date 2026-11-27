@@ -1,0 +1,7 @@
+area : (Int, Int) ->{} Int
+same-name? : (Text, Text) ->{} Bool
+ready? : (Int, Status) ->{} Bool
+either? : (Bool, Bool) ->{} Bool
+listed? : (List Int, Int) ->{} Bool
+label : (Int) ->{} Text
+first : forall a b. ((a, b)) ->{} a

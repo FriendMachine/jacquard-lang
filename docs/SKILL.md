@@ -227,11 +227,18 @@ contextual keyword, special only before a top-level `type`.
 
 Common first-draft mistakes, with the form Jacquard expects:
 
-- Comparisons and logic are named functions: `eq(a, b)` compares Ints,
-  `int.lt?(a, b)`, `text.eq?(a, b)`, `bool.not(x)`, `bool.and(x, y)`. There
-  is no `==`, `<`, `not`, `and`, or `or`. `int.eq` and `int.show` are
-  dictionaries for functions such as `list.contains?(xs, x, int.eq)`, not
-  functions; `text.from-int(n)` renders an Int.
+- Comparisons and logic are named functions: `eq(a, b)` compares Ints only,
+  `text.eq?(a, b)` compares Text, `int.lt?(a, b)`, `bool.not(x)`,
+  `bool.and(x, y)`, `bool.or(x, y)`; `bool.and-then(x, fn () -> y)` and
+  `bool.or-else(x, fn () -> y)` stop early. There is no `==`, `<`, `&&`, `||`,
+  `!`, `not`, `and`, or `or`. `int.eq` and `int.show` are dictionaries for
+  functions such as `list.contains?(xs, x, int.eq)`, not functions;
+  `text.from-int(n)` renders an Int.
+- A type signature is its own line before the definition, and a function type
+  in a signature always lists its effects, `->{}` for none: `area : (Int, Int) ->{} Int`
+  then `area(w, h) = int.mul(w, h)`; never `area(w, h) : Int = ...`. (Operations inside
+  an `effect` declaration are the exception: they write a bare `->`, though a
+  function type inside an operation's parameters still writes `->{}`.)
 - Tuples have no `.0`/`.1` access: destructure with `let (a, b) = pair` or
   `match pair { | (a, b) -> ... }`.
 - An operation clause names its continuation with `resume`, and the clause
@@ -244,6 +251,28 @@ Common first-draft mistakes, with the form Jacquard expects:
   constructor pattern binds every field: `Pair(a, b)`.
 - Reserved words such as `rec`, `type`, and `effect` cannot name values; rename
   the binder.
+- A parameter named like a constructor (`done` beside `Done`) binds a value; in
+  a match arm a lowercase pattern also binds, so write `Done` to match the
+  constructor.
+
+```jacquard doctest=skill-first-draft mode=check fixture=skill-first-draft.jac stdout=skill-first-draft.stdout stderr=empty exit=0
+type Status = | Done | Pending
+
+area : (Int, Int) ->{} Int
+area(w, h) = int.mul(w, h)
+
+same-name?(a, b) = text.eq?(a, b)
+
+ready?(n, status) = bool.and(int.lt?(0, n), match status { | Done -> True | Pending -> False })
+
+either?(a, b) = bool.or(a, bool.not(b))
+
+listed?(xs, x) = list.contains?(xs, x, int.eq)
+
+label(n) = text.from-int(n)
+
+first(pair) = match pair { | (a, _) -> a }
+```
 
 ### Values, Calls, And Definitions
 
@@ -1173,8 +1202,13 @@ Do not invent new kernel forms for surface sugar.
 - A local `let rec` whose body performs an effect can fail row inference
   (E0801); annotate the recursive call with its type or use a top-level
   recursive definition.
-- W1201 warns when a parameter is named like a constructor in scope (`job`
-  for `Job`, `allow` for the prelude's `Allow`); rename the parameter.
+- W1201 warns when a lowercase pattern in a match arm, operation clause, handler
+  `return` clause, `let` or nested parameter pattern is spelled like a
+  constructor in scope (`job` for `Job`). In a match arm, an operation clause or
+  a `return` clause, write the constructor's PascalCase name to match it
+  (`| run(Job) resume k`); in a `let` or a nested parameter a pattern cannot
+  match a constructor, so rename the binding. A bare-name function parameter
+  (`f(job) = ...`) binds by intent and is not flagged.
 
 ## Recommended Agent Workflow
 

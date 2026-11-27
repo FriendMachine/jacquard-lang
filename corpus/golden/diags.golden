@@ -1,6 +1,6 @@
 type-mismatch | type-mismatch.jqd:1:1-34: error[E0801]: Types do not agree
   Cause: argument: expected int, got text (type mismatch)
-  Next step: the expected side comes from the surrounding context; make both sides agree
+  Next step: the bare arithmetic and comparison functions take Int; for Text use `text.concat`, `text.eq?` or `text-compare`
 branch-mismatch | branch-mismatch.jqd:1:48-79: error[E0801]: Types do not agree
   Cause: match clause result: expected int, got text (type mismatch)
   Next step: the expected side comes from the surrounding context; make both sides agree

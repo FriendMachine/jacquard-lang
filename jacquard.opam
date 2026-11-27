@@ -24,7 +24,7 @@ depends: [
   "fmt" {with-test}
   "qcheck" {with-test}
   "qcheck-alcotest" {with-test}
-  "ocamlformat" {with-dev-setup}
+  "ocamlformat" {with-dev-setup & = "0.29.0"}
   "ocaml-lsp-server" {with-dev-setup}
   "utop" {with-dev-setup}
   "odoc" {with-doc}

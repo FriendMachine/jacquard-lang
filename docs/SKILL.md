@@ -1,6 +1,6 @@
 ---
 name: jacquard
-description: Install and use Jacquard; write, check, run, format, hash, infer, test, and compile effect-typed, content-addressed .jac programs. Use for Jacquard surface syntax, capability manifests, handlers, discrete Dist models, Code values, Warp tests, canonical identity, replay, and native AOT builds.
+description: Install and use Jacquard; write, check, run, format, hash, infer, test, and compile effect-typed, content-addressed .jac programs. Use for Jacquard surface syntax, capability manifests, handlers, discrete Dist models, Code values, Warp tests, canonical identity, replay, and native AOT builds. Topic pages under docs/skill/ cover the command reference, Code values and grammar, capabilities, Dist, Warp detail, identity and review, and native builds.
 ---
 
 # Jacquard Standalone Guide
@@ -20,13 +20,15 @@ visible to the checker and tools:
 - Handlers are deep. `multi` operations bind reusable continuations; `once`
   operations bind affine `Resume` values with static and runtime reuse checks.
 
-This file is self-contained for public use. A repository checkout is needed
-only to develop the OCaml implementation, not to install or write Jacquard.
+This core page covers what a first draft needs; the [topic pages](#topic-pages)
+under `skill/` hold reference material. Together they are self-contained for
+public use. A repository checkout is needed only to develop the OCaml
+implementation, not to install or write Jacquard.
 
 This guide describes the current `main` branch. Where it differs from the
 latest release (0.3.0), the difference is marked **Since 0.3.0**. Every
-`jacquard` example in this file is run or checked by the repository's
-documentation tests (`test/docs-doctest`).
+`jacquard` example in this guide and its topic pages is run or checked by the
+repository's documentation tests (`test/docs-doctest`).
 
 ## Install
 
@@ -81,77 +83,23 @@ jac run PROGRAM.jac --allow console --allow net
 jac run PROGRAM.jac --dry-run
 jac run PROGRAM.jac --fuel 1000000   # bounded: running out is E0919, exit 2
 
-# Local projects (project.jqd): compose several files, pin dependencies,
-# bundle; see docs/designs/project-structure.md.
-jac project check --project DIR
-jac project run --project DIR ENTRY --allow console
-jac project test --project DIR --seed 42 --no-cache
-jac project build --project DIR ENTRY -o OUT
-jac project pin --project DIR
-
-# Public API identity: emit a source's interface-v1 manifest, verify a store
-# against one, or classify a change between two manifests.
-jac interface emit LIB.jac
-jac interface verify LIB.jqi STORE
-jac interface diff OLD.jqi NEW.jqi
-
-# Since 0.3.0: compare two checked versions of an entry point over declared
-# cases and report where behavior differs (docs/behavior-review.md).
-jac review run --old OLD.jac --new NEW.jac --cases CASES.jac --entry NAME --domain NAME
-
-# Compare complete transcripts under schedule/Secret variation, or only result
-# values under one live grant versus the dry world.
-jac relate PROGRAM.jac --vary schedule=8 --seed 42
-jac relate PROGRAM.jac --vary schedule=8 --seed 42 --allow console
-jac relate PROGRAM.jac --vary secret=deploy-token --seed 42 --allow secret
-jac relate PROGRAM.jac --vary grant=net --seed 42
+# Warp tests.
+jac test TESTS.jac --seed 42
+jac test TESTS.jac --seed 42 --exhaustive --budget 10000
 
 # Format and identify code.
 jac fmt PROGRAM.jac
 jac fmt PROGRAM.jac --write
 jac hash PROGRAM.jac
 
-# Discrete probabilistic inference.
-jac infer enumerate MODEL.jac
-jac infer lw MODEL.jac --seed 42 --samples 100000
-jac dist-diff MODEL_A.jac MODEL_B.jac
-
-# Warp tests.
-jac test TESTS.jac --seed 42
-jac test TESTS.jac --seed 42 --exhaustive --budget 10000
-jac test TESTS.jac --cache-dir .jacquard-test-cache
-jac test TESTS.jac --allow fs --allow net --allow clock --allow console
-
-# Content store, canonical-structure diff, traces, and tiers. A store keeps the
-# prelude and every installed declaration and records which prelude files
-# (names and bytes) it was created with: reopening with that prelude is a
-# no-op, so separate entry points can run against one installed model, and
-# reopening with a different prelude is refused (E0705) without changes. A
-# `store add` that refuses any declaration leaves the store exactly as it was.
-jac run MODEL.jac --store STORE
-jac run ENTRY.jac --store STORE
-jac store add STORE PROGRAM.jac
-jac store rename STORE old-name new-name
-jac diff STORE_A STORE_B
-jac replay TRACE.jqd PROGRAM.jqd --to 12
-jac replay TRACE.jqd PROGRAM.jqd --fork '4=(response 503 "down")'
-jac tiers PROGRAM.jac
-
-# Audit-chain and governed Workspace review tools.
-jac audit genesis
-jac audit append AUDIT_LOG.audit AUDIT_ENTRY.jqd --previous HASH
-jac governance check WORKSPACE.jac --output-format json-v1
-jac governance verify-log AUDIT_LOG.audit --head HASH
-jac governance verify-run RUN_BUNDLE.jqd
-jac governance reconcile RECONCILIATION_BUNDLE.jqd
-jac governance explain PROPOSAL_ID --bundle RECONCILIATION_BUNDLE.jqd
-jac host worker --store DIR
-jac why-effect Net --source WORKSPACE.jac --output-format json-v1
-
-# Native AOT accepts public surface input directly.
-jac build PROGRAM.jac -o program
-jac export PROGRAM.jac -o PROGRAM.jqd  # explicit evidence/debug carrier only
-./program --allow console
+# More commands are in skill/commands.md (`jac --help` lists them all):
+#   jac project ...                     local projects (project.jqd)
+#   jac interface ...                   public API identity manifests
+#   jac review run, jac relate          behavior and transcript comparison
+#   jac infer, jac dist-diff            Dist inference (skill/commands.md)
+#   jac store, diff, replay, tiers      stores and traces (skill/commands.md)
+#   jac audit, governance, why-effect   governed Workspace review (skill/commands.md)
+#   jac build, jac export               native AOT and .jqd export (skill/native-and-carriers.md)
 ```
 
 `check` typechecks every declaration. `run` loads declarations, then evaluates
@@ -169,35 +117,11 @@ are:
 - `3`: unhandled or ungranted effect
 - `124`: command-line usage error
 
-`tiers` reports handler syntax and native lowering as separate tables. A
-tail-resumptive source shape is tokenless only for a `multi` operation; every
-`once` clause materializes the shared affine resume token, including a
-syntactically tail-resumptive clause.
-
 Use stderr for diagnostics and stdout for successful program output. Always
 provide an explicit seed for reproducible sampling and property tests.
-`relate` success stdout is one verdict line; constituent values and Console
-output are captured rather than printed. Console input is read from the process
-only during run 1, captured by call ordinal, and replayed from a fresh cursor in
-every later run; calls beyond the captured list receive EOF (`""`). A completed
-transcript difference is Warp diagnostic E1003 and status 1. Constituent
-diagnostic, runtime, and authority failures retain statuses 1, 2, and 3.
-Secret variation runs exactly twice with distinct deterministic latest-version
-payloads for the named Secret while holding the scheduler and Dist seed fixed.
-It compares the raw transcripts, then redacts either derived payload from all
-text, JSON, runtime, and unexpected-error output. This exact-byte scrubber is
-not taint tracking and does not detect transformed or fragmented payloads. Use
-`jacquard relate FILE --vary secret=NAME --seed S --allow secret` only as
-bounded evidence for that selected program, name, and seed.
-Grant variation runs exactly twice with no extra `--allow`: one live
-`net`, `infer`, or nonzero-seeded `dist` grant, then the released dry world.
-It compares only ordered rendered result values, not routed events, Console
-output, audits, calls, costs, latency, or external consequences. Forwarded,
-mixed read/write, unsupported, and unknown effects are usage errors.
-The `audit` commands append canonical hash-chained entries and publish their
-heads. The `governance` and `why-effect` commands verify frozen Workspace v0
-artifacts or conservatively analyze declaration-only source; they do not
-execute that source or turn review evidence into host authorization.
+
+[skill/commands.md](skill/commands.md) is the command reference,
+including what `tiers`, `relate`, `audit`, and `governance` report.
 
 ## Surface Syntax
 
@@ -470,7 +394,8 @@ Labeled constructor patterns are refutable, just like positional constructor
 patterns, so they are not valid lambda parameters or `let` binders.
 Inside `quote { ... }`, constructor patterns must remain positional; labeled
 patterns there fail with E1237 because quoted code cannot carry their labels
-semantically.
+semantically (quoting is covered in
+[skill/code-and-grammar.md](skill/code-and-grammar.md)).
 
 Use a braced block when an arm sequences work:
 
@@ -632,13 +557,8 @@ same handler. The operation-clause body itself runs outside that handler, so
 performing the same operation directly in its own clause forwards outward.
 The return clause also runs outside the completed handled region.
 
-For governed Workspace code, use the shipped
-`workspace.forward-layer(sequence, policy, simulators, body)` for that pattern.
-It forwards only the exact same once-mode Workspace operation and unchanged
-arguments, shares the caller's `AuditSequence`, and retains `Workspace` rather
-than introducing raw authority. Put one `workspace.live-layer` outside the
-forwarding chain to terminate it in real drivers. Do not create another
-sequence owner inside a layer or infer support for argument transforms.
+Governed Workspace code has a shipped forwarding layer for that pattern; see
+[skill/capabilities-and-host.md](skill/capabilities-and-host.md).
 
 Use `resume _` when a clause deliberately never resumes. A handler in quoted
 code must name its continuation instead (E1245), because quoted code is
@@ -680,124 +600,9 @@ Handling subtracts only the handled effect from the row and forwards all other
 effects. This is why one unchanged policy can run under real, replay, dry-run,
 scripted, hostile, or probabilistic handlers.
 
-### Quote, Unquote, And Code
-
-`quote` captures unresolved surface structure as a `Code` value. `unquote`
-splices a `Code` value while inside a quote.
-
-```jacquard doctest=skill-quote mode=check fixture=skill-quote.jac stdout=skill-quote.stdout stderr=empty exit=0
-make-call(argument) = quote { add(unquote(argument), 1) }
-
-candidate = quote { fn (x) -> add(x, 1) }
-
-run-candidate() = {
-  let function = `op:eval-code`(candidate)
-  function(41)
-}
-```
-
-Evaluation is authority: `eval-code` adds `Eval` to the row and requires
-`--allow eval`. Granting `Eval` does not grant `Net`, `Fs`, or any other world
-effect used by evaluated code. Constructed resolved hash references are
-validated rather than trusted as a capability bypass.
-
-Useful structural operations include:
-
-- `code.eq?(a, b)`: metadata-erased structural equality
-- `code.diff(a, b)`: text describing the smallest disagreeing subtrees
-- `code.form(head, children)` and `code.un-form(code)`
-- `code.of-int`, `code.to-int`, `code.of-text`, `code.to-text`
-
-`unquote` outside `quote` is invalid. A splice must produce `Code`. Nested
-quote levels are significant. `(expression : Type)` is a type annotation.
-Named calls are rejected with E1238 anywhere inside a surface quote, including
-inside a live `unquote`, because labels have no durable quoted carrier. Use a
-positional call in quoted code. Labeled constructor patterns are independently
-rejected there with E1237.
-
-`jqd { (bootstrap form) }` is the surface escape for a kernel form that cannot
-be represented without preserving an internal grouping. It is not general
-mixed-syntax authoring.
-
-### Compact Grammar
-
-This practical grammar covers ordinary public source:
-
-```text
-file        := top-item*
-top-item    := signature | definition | type-decl | effect-decl | expression
-signature   := name ":" type
-definition  := name ["(" ([label ":"] pattern ("," [label ":"] pattern)*)? ")"] "=" expression
-type-decl   := ["opaque"] "type" Type type-vars? "=" ["|"] constructor ("|" constructor)*
-effect-decl := mode "effect" Effect type-vars? "where" "{" uniform-op-signature+ "}"
-| "effect" Effect type-vars? "where" "{" mode-op-signature+ "}"
-uniform-op-signature := name ":" "(" ([label ":"] type ("," [label ":"] type)*)? ")" "->" type
-mode-op-signature := mode name ":" "(" ([label ":"] type ("," [label ":"] type)*)? ")" "->" type
-mode        := "once" | "multi"
-
-expression  := call ("|>" call)*
-call        := primary ("(" call-items? ")")*
-call-items  := [label ":"] expression ("," [label ":"] expression)*
-             | expression "with" label ":" expression ("," label ":" expression)*
-primary     := literal | marked-text | name | tuple | list | block | fn | match | if
-             | handle | quote | unquote | annotation
-marked-text := '$"' ("{{" | "{" expression "}" | character-or-escape)* '"'
-block       := "{" (let-item | try-item | expression)* expression "}"
-let-item    := "let" ["rec"] pattern ["(" patterns? ")"] "=" expression
-try-item    := ["let" pattern "="] "try" expression
-fn          := "fn" "(" patterns? ")" "->" expression
-match       := "match" expression "{" ("|" pattern "->" expression)+ "}"
-if          := "if" expression "then" expression "else" expression
-handle      := "handle" (atomic | block) "{" return-clause op-clause* "}"
-quote       := "quote" "{" expression "}"
-unquote     := "unquote" "(" expression ")"
-annotation  := "(" expression ":" type ")"
-
-pattern     := "_" | name | literal | Constructor ["(" (patterns | labeled-patterns)? ")"]
-             | "(" patterns? ")" | pattern "as" name
-labeled-patterns := label ":" pattern ("," label ":" pattern)* [","]
-type        := type-application | tuple-type | function-type | forall-type
-function-type := "(" types? ")" "->{" effects? ["|" row-var] "}" type
-```
-
-Indentation never determines structure. Calls, lists, tuples, and braced forms
-allow line breaks. After `=`, `:`, `->`, `then`, `else`, and `|>`, a newline is
-continuation rather than item separation.
-
-## Capabilities And Root Authority
-
-The complete `--allow` vocabulary is `clock`, `console`, `dist`, `eval`, `fs`,
-`infer`, `net`, and `secret`. `Console`, `Clock`, `Fs`, and `Net` describe the
-ordinary external world (`console` also grants `ConsoleInput`, whose `next-line`
-returns `Option Text` and reports end of input as `None`, unlike `read-line`); `Eval` is dynamic-code authority, `Infer` delegates to
-an unverified model boundary, `Secret` uses the environment adapter, and `Dist`
-installs seeded sampling. `Dist` is computationally pure rather than outside-
-world authority, but selecting its root sampling handler is still an explicit
-grant. These root handlers exist only when granted:
-
-```sh
-jac check agent.jac --print-sigs
-jac check agent.jac --manifest console,net
-jac run agent.jac --allow console --allow net
-```
-
-Rules to rely on:
-
-- The checker propagates effects through higher-order functions, returned
-  closures, tuples, and polymorphic rows.
-- A handler removes only its own effect.
-- An ungranted world effect refuses before that effect executes.
-- `check --manifest` never runs user code.
-- `--dry-run` forwards reads and console/clock observation as documented,
-  audits writes and network actions, and performs no audited world mutation.
-- `--allow fs` currently grants the whole filesystem. Authority is effect-level,
-  not path- or domain-level object capability.
-- The interpreter's `--allow net` handler is a deterministic stub. Scripted and
-  recording handlers ship, but a real socket/HTTP adapter does not.
-- Evaluated code runs with root grants, not under an interposed attenuation
-  handler. Audit its inferred requirements and grants accordingly.
-- Top-level rows are closed. When an API expects an open-row thunk, eta-expand
-  a named computation: `fn () -> model()`.
+Each world effect is installed only by its root grant (`--allow console`,
+`fs`, `net`, `clock`, or `secret`); the full vocabulary and the authority rules
+are in [skill/capabilities-and-host.md](skill/capabilities-and-host.md).
 
 The world operations are called directly:
 
@@ -829,58 +634,6 @@ status-of(url) =
 
 token() = secret.expose(secret.read(SecretRef(name: "deploy-token", version: None)))
 ```
-
-Never infer authority from a hand-written manifest or comment; use the checked
-row. Never add a grant merely to silence a refusal without reviewing why the
-row contains that effect.
-
-`Approval`, `Audit`, `Judge`, `Workspace`, and `Channel` have implemented
-language or embedding boundaries but are not ordinary `--allow` root names.
-In particular, a governance verdict is evidence consumed by trusted host code;
-it does not install ambient authority.
-
-## Discrete Probability With Dist
-
-The prelude defines distribution values such as `Bernoulli(p)`,
-`Categorical(weighted-pairs)`, and `UniformInt(low, high)`. Models perform
-`sample` and `observe` through the `Dist` effect. `Bernoulli(p)` is a
-`Distribution Bool` and `UniformInt(low, high)` a `Distribution Int`, so a draw
-from either is a `Bool` or an `Int`; using it at another type is a check error.
-
-```jacquard doctest=skill-dist mode=check fixture=skill-dist.jac stdout=skill-dist.stdout stderr=empty exit=0
-coin-model : () ->{Dist} Bool
-coin-model() = {
-  let first = `op:sample`(Bernoulli(0.5))
-  let second = `op:sample`(Bernoulli(0.5))
-  `op:observe`(
-    Bernoulli(if bool.or(first, second) then 1.0 else 0.0),
-    True)
-  first
-}
-
-coin-model()
-```
-
-Run the exact and approximate handlers over the same file:
-
-```sh
-jac hash coin.jac > before.hash
-jac infer enumerate coin.jac
-jac infer lw coin.jac --seed 42 --samples 100000
-jac hash coin.jac > after.hash
-cmp before.hash after.hash
-```
-
-Exact enumeration resumes once per support value, multiplies observation
-likelihoods, prunes exact zero-weight paths, merges equal outcomes at the CLI,
-and normalizes. Likelihood weighting is deterministic for the same seed and
-sample count. `Categorical` weights are relative. `UniformInt` exact support is
-capped at 10,000 outcomes.
-
-Inside Jacquard, use `dist.enumerate(fn () -> model())`, then
-`dist.tally(table, equality)` when equal outcomes should be merged. The
-in-language all-impossible case may expose NaN weights; CLI enumeration reports
-a diagnostic instead. An unhandled root `observe` is an error.
 
 ## Standard Prelude
 
@@ -998,158 +751,28 @@ Useful assertions include `check.true`, `check.eq`, `check.some`,
 A case that performs zero checks warns. In sampled property mode, `observe` is
 not conditioning; use `--exhaustive` when the property depends on observation.
 
-`check.posterior` and `check.same-dist` are testing laws, not governance
-authorization. GM.21's decision-bearing uncertainty path is
-`judge.posterior-exact-v1`: it resolves a stored
-`(GovernanceCall) ->{Dist} Risk` model by content hash, obtains an independent
-baseline from the next outer Judge, performs bounded exact enumeration, and
-only raises the baseline risk. `posterior.replay-exact-v1` reruns that exact
-evidence. Exact `observe` accepts transparent primitive, tuple, and constructor
-data; closures and opaque runtime values fail closed rather than comparing
-equal through their redacted rendering. Seeded `posterior.sample-evidence-v1` returns the distinct
-`NonAuthorizingApproximateRiskEvidenceV1` carrier and cannot project an
-assessment or reach the gate.
+Posterior checks and the test cache are covered in [skill/warp.md](skill/warp.md).
+The scripted world handlers (`console.scripted`, `fs.in-memory`,
+`net.scripted`, `clock.fixed`) are listed under Standard Prelude above.
 
 Discharge world/control effects inside a `Case` with scripted handlers. If the
 resulting row is exactly `{Check}`, it is a hermetic test. `Eval` has no
 in-language hermetic discharger, so eval-dependent behavior belongs in a CLI
 transcript test rather than a Warp unit test.
 
-Warp's cache keys on canonical content hashes and dependencies. A comment,
-format, or ordinary term-rename-only edit reruns zero tests. A canonical
-dependency-content edit reruns affected dependents. Use `--no-cache` for
-demonstrations and a fixed `--seed` for repeatable sampled properties.
-
-
-To check failure handling exhaustively, explore every outcome of your own effect: write a
+To check failure handling exhaustively, explore every outcome of your own effect (it must be
+declared `multi`: exploring resumes each continuation once per outcome): write a
 forwarding handler that answers each operation with `explore.branch(site, [outcome, ...])` and pass
 the code under test to `explore.all`, which returns one `(value, path)` per execution;
 `jacquard test` prints how many executions each case explored and whether exploration was
 complete (see docs/warp-testing.md, "Exploring every outcome of your own effect").
 
-## Identity, Formatting, And Review
-
-`jac hash` computes `HASH_V0` over canonical structure. It erases metadata,
-alpha-normalizes local binders, and hashes recursive definition groups as
-units. Consequently:
-
-- Formatting and comments do not change identity.
-- Alpha-equivalent local names hash equally.
-- Reordering members of a recursive SCC is stable.
-- Renaming a top-level display name changes the name index, not its object.
-- Provenance can change without changing the approved content hash.
-- Explicit term/operation call labels are a versioned, hash-bound companion
-  ABI. Binder and callable renames preserve it; a conflicting relabel is
-  E0612 rather than an identity-silent API change.
-
-Use `jac fmt --write` for canonical layout. Within each uninterrupted run of
-term definitions, the formatter orders definitions so each one follows the
-definitions it uses (members of one mutually recursive group keep their relative
-order), so adding a call to a later definition can move the caller. A term
-cannot refer forward across a `type` or `effect` declaration or a bare top-level
-expression (E0301); keep terms that use each other in one run. Use stores and
-`jac diff` when you need rename classification, changed canonical subtrees, or
-affected dependents. `jac diff` accepts two stores or two declaration-only
-source files; a source file with a bare top-level expression is refused (E0610),
-so diff a program without its entry call. Its output names the changed region
-(authority, signature, body, clause N) and callees by name; `--paths` prints
-kernel paths and content hashes for tools. Hash or diff equality establishes canonical structural identity, not
-general behavioral equivalence.
-
-Record/replay logs contain operation, argument, and result triples. Strict
-replay fails closed on operation or argument drift. Counterfactual `--fork`
-specifications replace an effect result at a trace index; malformed specs are
-diagnostics, not permissive fallbacks.
-
-## Native Compilation
-
-`jac build` accepts `.jac` surface input directly as well as retained `.jqd`
-kernel input. It uses the same parse/lower/resolution path as check and hash,
-emits C for the reachable program, links the Jacquard runtime, and asks clang
-or gcc to compile with optimization and LTO. It does not generate a persistent
-bootstrap twin. For programs within the documented native subset, native and
-interpreted behavior are expected to be byte-identical for stdout, stderr, and
-exit status.
-
-```sh
-# Installed releases discover the runtime automatically. In a checkout only:
-export JACQUARD_RUNTIME=/path/to/jacquard/runtime
-jac build program.jac -o program
-./program --allow console --seed 42
-```
-
-`jac export INPUT.jac -o OUTPUT.jqd` is the explicit conformance/debug escape
-hatch. Under the same prelude context, repeated exports are byte-identical and
-reparse to the same semantic top/member hashes; quoted constructor and
-operation intent remains encoded with `surface-ref-v0`. Publication is atomic
-and refuses an existing destination. The canonical bootstrap output erases
-comments, formatting, spans, documentation, and provenance metadata by design.
-It also contains only positional kernel applications and carries no
-`call-abi-v1` companion, so an exported `.jqd` declaration cannot by itself
-teach another surface source file its labels. The store companion is the
-cross-file named-call boundary.
-Export validates parsing, resolution, and canonical identity, but does not
-typecheck; use `jac check`, `jac run`, or `jac build` for that guarantee.
-Materialize stdin or other non-seekable input before export.
-
-The backend supports deep handlers with both reusable `multi` continuations and
-affine `once` resumptions, including the E0906 repeated-resume backstop. It also
-supports Dist, quotes, splices, and structural Code operations. Its implemented
-root grants are `console`, `clock`, `fs`, `dist`, and `infer`. Dynamic `eval`,
-interpreter root Task scheduling, and typed Channels do not compile as native
-execution features; `eval` reports E1102, while unsupported native grants are
-refused with E1103. `--dry-run` and `--infer-cache` are interpreter tooling and
-compiled binaries refuse them. A C toolchain is required. Deep non-tail
-recursion uses the configured program stack; set `JACQUARD_STACK_MB` if needed.
-Compiled units cache under `.jacquard-native/` by content hash.
-
-Native binaries do not count `--fuel`; bound execution with the interpreter.
-This is an AOT research backend, not a production optimizer, VM, or JIT. Do
-not infer broad performance claims from a single benchmark.
-
-## Licensing User Programs And Output
-
-Jacquard itself is Apache-2.0. Jacquard claims no copyright in source
-merely because it is written, checked, interpreted, or compiled with Jacquard.
-Native executables link Jacquard runtime material, so the Jacquard Runtime and
-Generated Output Permission explicitly permits user programs and compiled
-output to use any license their authors choose, including proprietary terms.
-
-The permission supplements Apache-2.0 for Runtime Material embedded in compiled
-programs and generated output; the compiler and separately distributed runtime
-source remain under Apache-2.0. See `RUNTIME-EXCEPTION.md`, `LICENSE`, and
-`NOTICE`. This summarizes project licensing intent and is not legal advice.
-
-## Bootstrap Carrier
-
-`.jqd` is the permanent kernel/debug carrier used by the prelude, replay,
-explicit export, and implementation fixtures. It is an s-expression encoding
-of 27 fixed kernel forms. Native build also accepts `.jqd`, but ordinary users
-should write and build `.jac` directly. Bootstrap calls are always positional;
-there is no named-argument grammar in `.jqd`.
-
-The expression heads are `lit`, `var`, `ref`, `lam`, `app`, `let`, `match`,
-`tuple`, `handle`, `quote`, `unquote`, and `ann`; pattern heads are `pwild`,
-`pvar`, `plit`, `pcon`, `ptuple`, and `pas`; declarations are `defterm`,
-`deftype`, and `defeffect`. `;` starts a bootstrap comment.
-
-```lisp
-; add(1, 2)
-(app (var add) (lit 1) (lit 2))
-
-; fn (x) -> mul(x, x)
-(lam ((pvar x)) (app (var mul) (var x) (var x)))
-```
-
-When both carriers exist, surface and bootstrap twins lower to the same kernel
-and must hash equally. Ordinary programs and demos should not maintain a
-hand-written `.jqd` twin; paired carriers are curated conformance fixtures.
-Do not invent new kernel forms for surface sugar.
-
 ## Failure Modes And Limits
 
 - No ambient authority: missing grants are expected refusals, not runtime
-  configuration bugs.
+  configuration bugs. Never infer authority from a hand-written manifest or
+  comment; use the checked row. Never add a grant merely to silence a refusal
+  without reviewing why the row contains that effect.
 - No null, records, modules/imports, guards, or-patterns, custom operators,
   or implicit traits/typeclasses (constructor field accessors and setters are
   generated only for labels every constructor carries; `Ctor(value with
@@ -1213,7 +836,8 @@ Do not invent new kernel forms for surface sugar.
 ## Recommended Agent Workflow
 
 1. Write and build public code in `.jac`; use `.jqd` only for explicit
-   export, replay, prelude, or implementation-fixture boundaries above.
+   export, replay, prelude, or implementation-fixture boundaries (see
+   [skill/native-and-carriers.md](skill/native-and-carriers.md)).
 2. Run `jac fmt --write FILE.jac`.
 3. Run `jac check FILE.jac --print-sigs` and review every inferred effect.
 4. For deployment, run `jac check FILE.jac --manifest ...` with the intended
@@ -1230,3 +854,26 @@ Do not invent new kernel forms for surface sugar.
 9. Keep generated code's required authority no broader than necessary.
 10. Preserve the fixed kernel and current non-goals unless a reviewed language
     decision explicitly changes them.
+
+## Topic Pages
+
+Reference material lives in topic pages under `skill/`. Read one when the
+task needs it:
+
+- [skill/commands.md](skill/commands.md): read this when you need a command or
+  flag not shown above, or what `relate`, `tiers`, `audit`, or `governance`
+  report.
+- [skill/code-and-grammar.md](skill/code-and-grammar.md): read this when you
+  quote, splice, or evaluate code, or need the compact grammar.
+- [skill/capabilities-and-host.md](skill/capabilities-and-host.md): read this
+  when choosing `--allow` grants, reviewing authority, or writing governed
+  Workspace layers.
+- [skill/dist.md](skill/dist.md): read this when you write a probabilistic
+  model or run `jac infer`.
+- [skill/warp.md](skill/warp.md): read this when you test posteriors or
+  distribution equality, or need to know what the Warp cache reruns.
+- [skill/review-and-identity.md](skill/review-and-identity.md): read this when
+  you hash, rely on formatter ordering, diff canonical structure, or replay a
+  trace.
+- [skill/native-and-carriers.md](skill/native-and-carriers.md): read this when
+  you build a native binary, export or read `.jqd`, or license compiled output.

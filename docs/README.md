@@ -8,9 +8,13 @@ project shape from file names alone.
 
 - `../README.md`: fresh-clone setup, common commands, demos, CI, and repo map.
 - `../AGENTS.md`: operating rules for future agents.
-- `SKILL.md`: standalone language and tool guide for coding agents — kernel
-  forms, rows and capabilities, Dist, code-as-data, Warp, CLI, style, and
-  gotchas. (Also discoverable as a project skill via `docs/SKILL.md`.)
+- `SKILL.md`: the core language and tool guide for coding agents — surface
+  syntax, effects and handlers, the standard prelude, everyday commands, the
+  Warp entry point, and gotchas; topic pages are in `skill/`. (Also
+  discoverable as a project skill via `docs/SKILL.md`.)
+- `skill/`: the agent guide's topic pages (command reference, Code and
+  grammar, capabilities, Dist, Warp detail, identity and review,
+  native builds), listed in order in `skill/INDEX`.
 - `tutorial.md`: runnable examples from literals through hashing and tooling.
 - `../demos/README.md`: demo catalog and what each demo proves.
 - `surface-syntax.md`: public `.jac` authoring syntax and its projection onto

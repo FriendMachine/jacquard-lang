@@ -375,7 +375,9 @@ a test source to save next to it, then run with `jacquard test FILE.jac FILE-exp
   `<effect>-runs(thunk)` helper over `explore.all`. An operation returning `Bool`, `()` or a
   non-opaque type FILE declares whose constructors take no fields answers with all its outcomes; any
   other operation answers from a generated `<op>-outcomes() = []` marked TODO (an empty list
-  prunes, so the scaffold runs before you fill it in);
+  prunes, so the scaffold runs before you fill it in). Types and effects are read from what
+  FILE installs: a later declaration of a type replaces an earlier one, and declarations in
+  raw `jqd { }` blocks count;
 - for each top-level function whose effects are exactly one of those effects, a `Case` that
   explores it with placeholder arguments (`0`, `""`, `False`, `0.0`, `[]`, `()`, and `0` for a
   type variable) and checks a property left as `True`, with TODO in its label. Replace the

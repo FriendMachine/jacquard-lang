@@ -25,48 +25,34 @@ let derived kernel suffix =
 (* prelude names a scaffold relies on: a FILE that redefines one would change what the scaffold
    means (a FILE `Test` type, for example, hides its cases from discovery) *)
 let relied_on_types = [ "test" ]
+let relied_on_cons = [ "case"; "true"; "false" ]
+let relied_on_terms = [ "check.true"; "list.all?"; "explore.all"; "explore.branch" ]
 
-let relied_on_values =
-  [ "case"; "true"; "false"; "check.true"; "list.all?"; "explore.all"; "explore.branch" ]
+(* names FILE binds, as kernel names, by kind: type names, constructors, and the names a call
+   resolves to a term (terms, operations, generated field accessors) *)
+type bound = { types : string list; cons : string list; terms : string list }
 
-(* names FILE binds, as kernel names, in two groups: type names, and the names a call or pattern
-   resolves (terms, constructors, operations) *)
-type bound = { types : string list; values : string list }
+let no_names = { types = []; cons = []; terms = [] }
 
 let file_names (tops : Surface_ast.top list) =
   List.fold_left
     (fun acc (top : Surface_ast.top) ->
       match top.it with
       | Surface_ast.Signature (name, _) | Surface_ast.Definition { name; _ } ->
-          { acc with values = name :: acc.values }
+          { acc with terms = name :: acc.terms }
       | Surface_ast.TypeDecl { name; constructors; _ } ->
           {
+            acc with
             types = name :: acc.types;
-            values =
-              List.map (fun (c : Surface_ast.constructor) -> c.name) constructors @ acc.values;
+            cons = List.map (fun (c : Surface_ast.constructor) -> c.name) constructors @ acc.cons;
           }
       | Surface_ast.EffectDecl { operations; _ } ->
           {
             acc with
-            values = List.map (fun (op : Surface_ast.operation) -> op.name) operations @ acc.values;
+            terms = List.map (fun (op : Surface_ast.operation) -> op.name) operations @ acc.terms;
           }
       | Surface_ast.TopExpr _ | Surface_ast.RawTop _ | Surface_ast.TopHole _ -> acc)
-    { types = []; values = [] } tops
-
-(* The finite outcomes of an operation's result type, when they can be listed: Bool, (), or a type
-   this file declares whose constructors all take no fields. *)
-let outcomes ~(types : (string * Surface_ast.constructor list) list) (ty : Surface_ast.ty) =
-  match ty.Surface_ast.it with
-  | Surface_ast.TyName "bool" when not (List.mem_assoc "bool" types) -> Some [ "False"; "True" ]
-  | Surface_ast.TyTuple [] -> Some [ "()" ]
-  | Surface_ast.TyName name -> (
-      match List.assoc_opt name types with
-      | Some constructors
-        when constructors <> []
-             && List.for_all (fun (c : Surface_ast.constructor) -> c.fields = []) constructors ->
-          Some (List.map (fun (c : Surface_ast.constructor) -> pascal c.name) constructors)
-      | Some _ | None -> None)
-  | _ -> None
+    no_names tops
 
 (* split "A, B (C, D), E" at commas outside brackets *)
 let split_top_commas text =
@@ -171,61 +157,141 @@ let installed_names (tops : (Kernel.top * (string * string) list) list) =
           | Kernel.DefTerm bindings ->
               {
                 acc with
-                values =
+                terms =
                   List.map (fun (b : Kernel.binding) -> b.bname) bindings
-                  @ List.map fst signatures @ acc.values;
+                  @ List.map fst signatures @ acc.terms;
               }
           | Kernel.DefType { tname; cons; _ } ->
-              (* the type's introduced names: its constructors and generated field accessors *)
+              let con_names = List.map (fun (c : Kernel.conspec) -> c.con_name) cons in
+              (* the type's other introduced names are its generated field accessors *)
               {
                 types = tname :: acc.types;
-                values =
-                  List.map (fun (c : Kernel.conspec) -> c.con_name) cons
-                  @ List.filter (fun n -> n <> tname) (List.map fst signatures)
-                  @ acc.values;
+                cons = con_names @ acc.cons;
+                terms =
+                  List.filter
+                    (fun n -> n <> tname && not (List.mem n con_names))
+                    (List.map fst signatures)
+                  @ acc.terms;
               }
           | Kernel.DefEffect { ops; _ } ->
-              { acc with values = List.map (fun (o : Kernel.opspec) -> o.op_name) ops @ acc.values }
-          ))
-    { types = []; values = [] } tops
+              { acc with terms = List.map (fun (o : Kernel.opspec) -> o.op_name) ops @ acc.terms }))
+    no_names tops
+
+(* The types and effects FILE installs. A later declaration of a name replaces an earlier one,
+   as it does when names resolve; a type a declaration refers to by hash is found by its
+   identity. *)
+type installed_type = { tname : string; opaque : bool; con_fields : (string * int) list }
+type installed_op = { oname : string; omode : Kernel.op_mode; arity : int; oresult : Kernel.ty }
+type installed_effect = { ename : string; evars : string list; ops : installed_op list }
+
+type model = {
+  types_by_name : (string * installed_type) list;
+  types_by_hash : (Hash.t * installed_type) list;
+  effects : installed_effect list;
+}
+
+let replace key value list =
+  if List.mem_assoc key list then
+    List.map (fun (k, v) -> if k = key then (k, value) else (k, v)) list
+  else list @ [ (key, value) ]
+
+let model_of (tops : (Kernel.top * Canon.decl_hashes option) list) =
+  List.fold_left
+    (fun model (top, identity) ->
+      match top with
+      | Kernel.Expr _ -> model
+      | Kernel.Decl d -> (
+          match d.Kernel.it with
+          | Kernel.DefTerm _ -> model
+          | Kernel.DefType { tname; opaque; cons; _ } ->
+              let t =
+                {
+                  tname;
+                  opaque;
+                  con_fields =
+                    List.map (fun (c : Kernel.conspec) -> (c.con_name, List.length c.fields)) cons;
+                }
+              in
+              let hashes =
+                match identity with
+                | None -> []
+                | Some (ids : Canon.decl_hashes) ->
+                    ids.decl_hash
+                    :: List.filter_map (fun (n, h) -> if n = tname then Some h else None) ids.named
+              in
+              {
+                model with
+                types_by_name = replace tname t model.types_by_name;
+                types_by_hash = List.map (fun h -> (h, t)) hashes @ model.types_by_hash;
+              }
+          | Kernel.DefEffect { ename; evars; ops } ->
+              let e =
+                {
+                  ename;
+                  evars;
+                  ops =
+                    List.map
+                      (fun (o : Kernel.opspec) ->
+                        {
+                          oname = o.op_name;
+                          omode = o.op_mode;
+                          arity = List.length o.op_params;
+                          oresult = o.op_result;
+                        })
+                      ops;
+                }
+              in
+              let effects =
+                if List.exists (fun x -> x.ename = ename) model.effects then
+                  List.map (fun x -> if x.ename = ename then e else x) model.effects
+                else model.effects @ [ e ]
+              in
+              { model with effects }))
+    { types_by_name = []; types_by_hash = []; effects = [] }
+    tops
+
+(* The finite outcomes of an operation's result type, when they can be listed: Bool, (), or a
+   non-opaque type FILE installs whose constructors all take no fields. *)
+let outcomes model (ty : Kernel.ty) =
+  let listed (t : installed_type) =
+    if (not t.opaque) && t.con_fields <> [] && List.for_all (fun (_, n) -> n = 0) t.con_fields then
+      Some (List.map (fun (c, _) -> pascal c) t.con_fields)
+    else None
+  in
+  let prelude_bool = Prelude_identity.pinned_identity "bool" Resolve.KType in
+  match ty.Kernel.it with
+  | Kernel.TTuple [] -> Some [ "()" ]
+  | Kernel.TRef (Kernel.Hashed h) -> (
+      match List.assoc_opt h model.types_by_hash with
+      | Some t -> listed t
+      | None -> if Some h = prelude_bool then Some [ "False"; "True" ] else None)
+  | Kernel.TRef (Kernel.Named n) -> (
+      match List.assoc_opt n model.types_by_name with
+      | Some t -> listed t
+      | None -> if n = "bool" then Some [ "False"; "True" ] else None)
+  | _ -> None
 
 (** [generate ?installed ~file ~tops ~signatures ()] is [Ok (Some text)], the scaffold; [Ok None]
     when FILE declares no [multi] effect to explore; or [Error cause] when FILE binds a name the
     scaffold defines or relies on, so the scaffold would not test what it says. [signatures] maps
     each top-level term to its checked signature. *)
-let generate ?(installed = { types = []; values = [] }) ~file ~(tops : Surface_ast.top list)
+let generate ?(installed = no_names) ~model ~file ~(tops : Surface_ast.top list)
     ~(signatures : (string * string) list) () =
   generated := [];
-  let types =
-    List.filter_map
-      (fun (top : Surface_ast.top) ->
-        match top.it with
-        (* an opaque type's constructors are sealed to FILE: the scaffold cannot name them *)
-        | Surface_ast.TypeDecl { name; opaque = true; _ } -> Some (name, [])
-        | Surface_ast.TypeDecl { name; constructors; opaque = false; _ } -> Some (name, constructors)
-        | _ -> None)
-      tops
+  (* names of the types FILE installs, for placeholders: a FILE `Int` gets none *)
+  let types = List.map (fun (n, _) -> (n, ())) model.types_by_name in
+  let explorable (e : installed_effect) =
+    e.evars = [] && e.ops <> [] && List.for_all (fun o -> o.omode = Kernel.Multi) e.ops
   in
   let effects =
     List.filter_map
-      (fun (top : Surface_ast.top) ->
-        match top.it with
-        | Surface_ast.EffectDecl { name; vars = []; operations }
-          when operations <> []
-               && List.for_all
-                    (fun (op : Surface_ast.operation) -> op.mode = Some Kernel.Multi)
-                    operations ->
-            Some (name, operations)
-        | _ -> None)
-      tops
+      (fun (e : installed_effect) -> if explorable e then Some (e.ename, e.ops) else None)
+      model.effects
   in
   let skipped_effects =
     List.filter_map
-      (fun (top : Surface_ast.top) ->
-        match top.it with
-        | Surface_ast.EffectDecl { name; _ } when not (List.mem_assoc name effects) -> Some name
-        | _ -> None)
-      tops
+      (fun (e : installed_effect) -> if explorable e then None else Some e.ename)
+      model.effects
   in
   if effects = [] then Ok None
   else
@@ -251,8 +317,8 @@ let generate ?(installed = { types = []; values = [] }) ~file ~(tops : Surface_a
       List.concat_map
         (fun (_, operations) ->
           List.filter_map
-            (fun (op : Surface_ast.operation) ->
-              match outcomes ~types op.result with None -> Some op.name | Some _ -> None)
+            (fun op ->
+              match outcomes model op.oresult with None -> Some op.oname | Some _ -> None)
             operations)
         effects
     in
@@ -269,18 +335,20 @@ let generate ?(installed = { types = []; values = [] }) ~file ~(tops : Surface_a
         line "%s(body) = handle body() {" (derived name "world");
         line "  | return v -> v";
         List.iter
-          (fun (op : Surface_ast.operation) ->
-            let params = List.mapi (fun i _ -> Printf.sprintf "a%d" (i + 1)) op.params in
+          (fun op ->
+            (* the arguments are not used: `_` binds nothing, so no constructor can shadow it *)
+            let params = List.init op.arity (fun _ -> "_") in
             let answer =
-              match outcomes ~types op.result with
+              match outcomes model op.oresult with
               | Some [ "()" ] -> "()"
               | Some listed ->
-                  Printf.sprintf "explore.branch(\"%s\", [%s])" op.name (String.concat ", " listed)
+                  Printf.sprintf "explore.branch(\"%s\", [%s])" op.oname (String.concat ", " listed)
               | None ->
-                  Printf.sprintf "explore.branch(\"%s\", %s())" op.name (derived op.name "outcomes")
+                  Printf.sprintf "explore.branch(\"%s\", %s())" op.oname
+                    (derived op.oname "outcomes")
             in
             line "  | %s(%s) resume k -> k(%s)"
-              (Surface_name.render Surface_name.Op op.name)
+              (Surface_name.render Surface_name.Op op.oname)
               (String.concat ", " params) answer)
           operations;
         line "}";
@@ -333,11 +401,17 @@ let generate ?(installed = { types = []; values = [] }) ~file ~(tops : Surface_a
         | _ -> ())
       signatures;
     let surface = file_names tops in
-    let types = installed.types @ surface.types and values = installed.values @ surface.values in
-    let taken = List.filter (fun name -> List.mem name values) (List.rev !generated) in
+    let own_types = installed.types @ surface.types
+    and own_cons = installed.cons @ surface.cons
+    and own_terms = installed.terms @ surface.terms in
+    (* a generated name is a term; a constructor spelled the same is refused too, to be safe *)
+    let taken =
+      List.filter (fun n -> List.mem n own_terms || List.mem n own_cons) (List.rev !generated)
+    in
     let redefined =
-      List.filter (fun name -> List.mem name types) relied_on_types
-      @ List.filter (fun name -> List.mem name values) relied_on_values
+      List.filter (fun n -> List.mem n own_types) relied_on_types
+      @ List.filter (fun n -> List.mem n own_cons) relied_on_cons
+      @ List.filter (fun n -> List.mem n own_terms) relied_on_terms
     in
     let render =
       List.map (fun name ->

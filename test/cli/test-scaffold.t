@@ -15,9 +15,9 @@ property is a TODO. It is formatted, and checked together with FILE before it is
   ) =
     handle body() {
       | return v -> v
-      | debit(a1, a2) resume k -> k(explore.branch("debit", [Ok, Rejected, Timeout]))
-      | credit(a1, a2) resume k -> k(explore.branch("credit", [Ok, Rejected, Timeout]))
-      | journal(a1) resume k -> k(())
+      | debit(_, _) resume k -> k(explore.branch("debit", [Ok, Rejected, Timeout]))
+      | credit(_, _) resume k -> k(explore.branch("credit", [Ok, Rejected, Timeout]))
+      | journal(_) resume k -> k(())
     }
   
   bank-runs(thunk) = explore.all(fn () -> bank-world(thunk))
@@ -201,3 +201,31 @@ accessor is caught too; a name in another kind (a function named `test`) is no c
   1 passed, 0 failed, 0 skipped, 0 refused
   cache: 0 hit, 1 ran
   exit:0
+
+Types and effects are read from what the file installs, so the last declaration of a type gives
+the outcomes, an effect declared in a raw block is explored, and a function named `case` does not
+conflict with the constructor `Case`.
+
+  $ printf 'type Side = | Heads | Tails\ntype Side = | Heads | Tails | Edge\nmulti effect Coin where { flip : () -> Side }\ntoss(n) = match flip() { | Heads -> n | Tails -> 0 | Edge -> 7 }\n' > redecl.jac
+  $ jacquard test --scaffold redecl.jac > redecl-explore-test.jac; echo "exit:$?"
+  exit:0
+  $ grep -o 'explore.branch("flip", \[[^]]*\])' redecl-explore-test.jac
+  explore.branch("flip", [Heads, Tails, Edge])
+  $ jacquard test redecl.jac redecl-explore-test.jac > redecl.out; echo "exit:$?"
+  exit:0
+  $ sed -n 1p redecl.out
+  PASS toss-explored/toss on every outcome (TODO: state the property) (1 check, 3 executions explored, complete)
+  $ printf 'jqd { (defeffect raw-coin () (op ping () (tref bool))) }\nf(n) = if ping() then n else 0\n' > raweff.jac
+  $ jacquard test --scaffold raweff.jac > raweff-explore-test.jac; echo "exit:$?"
+  exit:0
+  $ jacquard test raweff.jac raweff-explore-test.jac > raweff.out; echo "exit:$?"
+  exit:0
+  $ sed -n 1p raweff.out
+  PASS f-explored/f on every outcome (TODO: state the property) (1 check, 2 executions explored, complete)
+  $ printf 'multi effect Coin where { flip : () -> Bool }\ncase(n) = if flip() then n else 0\n' > fncase.jac
+  $ jacquard test --scaffold fncase.jac > fncase-explore-test.jac; echo "exit:$?"
+  exit:0
+  $ jacquard test fncase.jac fncase-explore-test.jac > fncase.out; echo "exit:$?"
+  exit:0
+  $ sed -n 1p fncase.out
+  PASS case-explored/case on every outcome (TODO: state the property) (1 check, 2 executions explored, complete)

@@ -3079,6 +3079,11 @@ let scaffold_cmd files prelude =
                        (List.map
                           (fun (top : Frontend.Checked.top) -> (top.resolved, top.signatures))
                           (Frontend.Checked.tops artifact)))
+                  ~model:
+                    (Test_scaffold.model_of
+                       (List.map
+                          (fun (top : Frontend.Checked.top) -> (top.resolved, top.identity))
+                          (Frontend.Checked.tops artifact)))
                   ()
               with
               | Ok None -> refuse (file ^ " declares no `multi` effect to explore")

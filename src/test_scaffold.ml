@@ -24,21 +24,34 @@ let derived kernel suffix =
 
 (* prelude names a scaffold relies on: a FILE that redefines one would change what the scaffold
    means (a FILE `Test` type, for example, hides its cases from discovery) *)
-let relied_on =
-  [ "test"; "case"; "true"; "false"; "check.true"; "list.all?"; "explore.all"; "explore.branch" ]
+let relied_on_types = [ "test" ]
 
-(* every top-level name FILE binds, in any kind, as kernel names *)
+let relied_on_values =
+  [ "case"; "true"; "false"; "check.true"; "list.all?"; "explore.all"; "explore.branch" ]
+
+(* names FILE binds, as kernel names, in two groups: type names, and the names a call or pattern
+   resolves (terms, constructors, operations) *)
+type bound = { types : string list; values : string list }
+
 let file_names (tops : Surface_ast.top list) =
-  List.concat_map
-    (fun (top : Surface_ast.top) ->
+  List.fold_left
+    (fun acc (top : Surface_ast.top) ->
       match top.it with
-      | Surface_ast.Signature (name, _) | Surface_ast.Definition { name; _ } -> [ name ]
+      | Surface_ast.Signature (name, _) | Surface_ast.Definition { name; _ } ->
+          { acc with values = name :: acc.values }
       | Surface_ast.TypeDecl { name; constructors; _ } ->
-          name :: List.map (fun (c : Surface_ast.constructor) -> c.name) constructors
-      | Surface_ast.EffectDecl { name; operations; _ } ->
-          name :: List.map (fun (op : Surface_ast.operation) -> op.name) operations
-      | Surface_ast.TopExpr _ | Surface_ast.RawTop _ | Surface_ast.TopHole _ -> [])
-    tops
+          {
+            types = name :: acc.types;
+            values =
+              List.map (fun (c : Surface_ast.constructor) -> c.name) constructors @ acc.values;
+          }
+      | Surface_ast.EffectDecl { operations; _ } ->
+          {
+            acc with
+            values = List.map (fun (op : Surface_ast.operation) -> op.name) operations @ acc.values;
+          }
+      | Surface_ast.TopExpr _ | Surface_ast.RawTop _ | Surface_ast.TopHole _ -> acc)
+    { types = []; values = [] } tops
 
 (* The finite outcomes of an operation's result type, when they can be listed: Bool, (), or a type
    this file declares whose constructors all take no fields. *)
@@ -145,11 +158,43 @@ let placeholder ~types ty =
   | _ when String.length ty > 0 && String.for_all (fun c -> c >= 'a' && c <= 'z') ty -> Some "0"
   | _ -> None
 
-(** [generate ~file ~tops ~signatures] is [Ok (Some text)], the scaffold; [Ok None] when FILE
-    declares no [multi] effect to explore; or [Error cause] when FILE binds a name the scaffold
-    defines or relies on, so the scaffold would not test what it says. [signatures] maps each
-    top-level term to its checked signature. *)
-let generate ~file ~(tops : Surface_ast.top list) ~(signatures : (string * string) list) =
+(** The names FILE installs, from its checked declarations (each with its introduced names and
+    schemes): written in surface syntax or as a raw [jqd { }] block, including generated field
+    accessors. *)
+let installed_names (tops : (Kernel.top * (string * string) list) list) =
+  List.fold_left
+    (fun acc (top, signatures) ->
+      match top with
+      | Kernel.Expr _ -> acc
+      | Kernel.Decl d -> (
+          match d.Kernel.it with
+          | Kernel.DefTerm bindings ->
+              {
+                acc with
+                values =
+                  List.map (fun (b : Kernel.binding) -> b.bname) bindings
+                  @ List.map fst signatures @ acc.values;
+              }
+          | Kernel.DefType { tname; cons; _ } ->
+              (* the type's introduced names: its constructors and generated field accessors *)
+              {
+                types = tname :: acc.types;
+                values =
+                  List.map (fun (c : Kernel.conspec) -> c.con_name) cons
+                  @ List.filter (fun n -> n <> tname) (List.map fst signatures)
+                  @ acc.values;
+              }
+          | Kernel.DefEffect { ops; _ } ->
+              { acc with values = List.map (fun (o : Kernel.opspec) -> o.op_name) ops @ acc.values }
+          ))
+    { types = []; values = [] } tops
+
+(** [generate ?installed ~file ~tops ~signatures ()] is [Ok (Some text)], the scaffold; [Ok None]
+    when FILE declares no [multi] effect to explore; or [Error cause] when FILE binds a name the
+    scaffold defines or relies on, so the scaffold would not test what it says. [signatures] maps
+    each top-level term to its checked signature. *)
+let generate ?(installed = { types = []; values = [] }) ~file ~(tops : Surface_ast.top list)
+    ~(signatures : (string * string) list) () =
   generated := [];
   let types =
     List.filter_map
@@ -287,9 +332,13 @@ let generate ~file ~(tops : Surface_ast.top list) ~(signatures : (string * strin
               signature
         | _ -> ())
       signatures;
-    let own = file_names tops in
-    let taken = List.filter (fun name -> List.mem name own) (List.rev !generated) in
-    let redefined = List.filter (fun name -> List.mem name own) relied_on in
+    let surface = file_names tops in
+    let types = installed.types @ surface.types and values = installed.values @ surface.values in
+    let taken = List.filter (fun name -> List.mem name values) (List.rev !generated) in
+    let redefined =
+      List.filter (fun name -> List.mem name types) relied_on_types
+      @ List.filter (fun name -> List.mem name values) relied_on_values
+    in
     let render =
       List.map (fun name ->
           match name with

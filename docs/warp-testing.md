@@ -385,16 +385,21 @@ a test source to save next to it, then run with `jacquard test FILE.jac FILE-exp
   drops a trailing `?` or `!` from the name it is built from (`valid?` gets `valid-explored`).
 
 A function whose recursion depends on an outcome, such as `walk(n) = if flip() then
-walk(int.add(n, 1)) else n`, has executions that never finish, so its Case never completes: set
-a depth bound in the function, or explore it with `explore.up-to` and a small limit. A function
-that makes many choices can reach the 10,000-execution limit (nine operations with three
-outcomes each make 19,683 executions), and its Case then fails with E0905.
+walk(int.add(n, 1)) else n`, has no last execution: each execution finishes, but there are
+infinitely many, so any exploration of it stops at its limit and its Case fails with E0905
+(`explore.up-to(50, ...)` fails after 50). Each execution is also longer than the one before,
+so reaching the default 10,000 takes long and uses much memory. Bound the recursion in the
+function instead, for example with a depth parameter. A function that makes many choices can
+reach the limit the same way (nine operations with three outcomes each make 19,683
+executions).
 
 The output is formatted, and is checked with FILE before it is printed, the way `jacquard test`
 loads the two files. E1017 refuses a file with no `multi` effect; a file that already defines a
 name the scaffold would define (rename it), or redefines a prelude name the scaffold relies on
-(`Test`, `Case`, `True`, `False`, `check.true`, `list.all?`, `explore.all`, `explore.branch`), since
-the scaffold would then test something else or go undiscovered; and a file that `jacquard test`
+(the type `Test`; `Case`, `True`, `False`, `check.true`, `list.all?`, `explore.all`,
+`explore.branch`), since the scaffold would then test something else or go undiscovered. Names
+are taken from what the file installs, including raw `jqd { }` blocks and generated field
+accessors (`type Explore = | Plan(all: Int)` generates the accessor `explore.all`); and a file that `jacquard test`
 could not load with its scaffold (a top-level expression, or two generated names that coincide, as
 for `valid?` beside `valid`). Evidence: `test/cli/test-scaffold.t`.
 

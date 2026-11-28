@@ -3074,6 +3074,12 @@ let scaffold_cmd files prelude =
           | Ok parsed -> (
               match
                 Test_scaffold.generate ~file:(Filename.basename file) ~tops:parsed.tops ~signatures
+                  ~installed:
+                    (Test_scaffold.installed_names
+                       (List.map
+                          (fun (top : Frontend.Checked.top) -> (top.resolved, top.signatures))
+                          (Frontend.Checked.tops artifact)))
+                  ()
               with
               | Ok None -> refuse (file ^ " declares no `multi` effect to explore")
               | Error cause -> refuse cause

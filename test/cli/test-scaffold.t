@@ -174,3 +174,30 @@ outcome list; the scaffold is checked as a second file, as `jacquard test` loads
   1
   $ jacquard test sealed.jac sealed-explore-test.jac > sealed.out; echo "exit:$?"
   exit:0
+
+Names are taken from what the file installs, so a raw `jqd { }` declaration or a generated field
+accessor is caught too; a name in another kind (a function named `test`) is no conflict.
+
+  $ printf 'jqd { (deftype test () (con case (field (tref text)) (field (tarrow () (row (eref check)) (ttuple))))) }\nmulti effect Coin where {\n  flip : () -> Bool\n}\ntoss(n) = if flip() then n else 0\n' > raw-test.jac
+  $ jacquard test --scaffold raw-test.jac > raw-test-explore-test.jac 2> raw-test.err; echo "exit:$?"
+  exit:1
+  $ grep Cause raw-test.err
+    Cause: raw-test.jac redefines `Test`, `Case`, which the scaffold relies on from the prelude; a scaffold would not test what it says
+  $ printf 'type Explore = | Plan(all: Int)\nmulti effect Coin where {\n  flip : () -> Bool\n}\ntoss(n) = if flip() then n else 0\n' > accessor.jac
+  $ jacquard test --scaffold accessor.jac > accessor-explore-test.jac 2> accessor.err; echo "exit:$?"
+  exit:1
+  $ grep Cause accessor.err
+    Cause: accessor.jac redefines `explore.all`, which the scaffold relies on from the prelude; a scaffold would not test what it says
+  $ printf 'jqd { (defterm ((binding toss-explored () (lit 1)))) }\nmulti effect Coin where {\n  flip : () -> Bool\n}\ntoss(n) = if flip() then n else 0\n' > raw-name.jac
+  $ jacquard test --scaffold raw-name.jac > raw-name-explore-test.jac 2> raw-name.err; echo "exit:$?"
+  exit:1
+  $ grep Cause raw-name.err
+    Cause: raw-name.jac already defines `toss-explored`, which the scaffold would define too; rename it
+  $ printf 'multi effect Coin where {\n  flip : () -> Bool\n}\ntest(n) = if flip() then n else 0\n' > fn-test.jac
+  $ jacquard test --scaffold fn-test.jac > fn-test-explore-test.jac; echo "exit:$?"
+  exit:0
+  $ jacquard test fn-test.jac fn-test-explore-test.jac; echo "exit:$?"
+  PASS test-explored/test on every outcome (TODO: state the property) (1 check, 2 executions explored, complete)
+  1 passed, 0 failed, 0 skipped, 0 refused
+  cache: 0 hit, 1 ran
+  exit:0
